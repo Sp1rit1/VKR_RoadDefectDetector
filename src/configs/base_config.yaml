@@ -1,0 +1,7 @@
+
+  # Путь к исходному "мастер" датасету
+  master_dataset_path: "data/Master_Dataset"
+
+  # Общие параметры для сохранения результатов
+  logs_base_dir: "logs"         # Базовая папка для логов TensorBoard
+  weights_base_dir: "weights"   # Базовая папка для сохранения весов моделей
