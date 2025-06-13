@@ -12,3 +12,16 @@ train_params:
   epochs: 50 # Это было для classifier, для detector epochs_test_overfit
   learning_rate: 0.0001
   epochs_test_overfit: 100 # Для train_detector.py
+
+
+anchors_wh_normalized: # [width, height] нормализованные
+  - [0.05, 0.05]  # Маленький квадратный
+  - [0.1,  0.05]  # Маленький горизонтальный
+  - [0.05, 0.1]   # Маленький вертикальный
+
+
+loss_weights:
+    coordinates: 1.0  # Вес для потерь координат
+    objectness: 1.0   # Вес для потерь objectness (когда объект есть)
+    no_object: 0.5    # Вес для потерь objectness (когда объекта нет - фон)
+    classification: 1.0 # Вес для потерь классификации
