@@ -65,7 +65,7 @@ def collect_image_paths_from_source():
     """Собирает абсолютные пути к изображениям из исходных директорий."""
     road_image_paths = []
     not_road_image_paths = []
-    valid_extensions = ['*.jpg', '*.jpeg', '*.png', '*.JPEG', '*.PNG']
+    valid_extensions = ['*.jpg', '*.jpeg', '*.png']
 
     # Собираем пути к изображениям дорог (с дефектами и без)
     road_source_parent_subdirs = [SOURCE_DEFECTIVE_ROAD_IMG_PARENT_SUBDIR, SOURCE_NORMAL_ROAD_IMG_PARENT_SUBDIR]

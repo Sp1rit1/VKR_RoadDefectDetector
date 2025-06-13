@@ -147,64 +147,107 @@ def preprocess_image_and_boxes(image, boxes, target_height_tf, target_width_tf):
     return image_processed, scaled_boxes_norm
 
 
+# НОВАЯ ГЛОБАЛЬНАЯ ПЕРЕМЕННАЯ ИЗ КОНФИГА ДЕТЕКТОРА
+MAX_BOXES_PER_IMAGE_FROM_CONFIG = DETECTOR_CONFIG.get('max_boxes_per_image', 10)
+
+
 def load_and_prepare_example_py_func(image_path_tensor, xml_path_tensor,
                                      target_height_for_py_func,
-                                     target_width_for_py_func):  # Убрали classes_list_for_py_func
+                                     target_width_for_py_func):
     image_path = image_path_tensor.numpy().decode('utf-8')
     xml_path = xml_path_tensor.numpy().decode('utf-8')
+
+    # --- Загрузка изображения (как раньше) ---
     try:
         from PIL import Image as PILImage
         pil_image = PILImage.open(image_path).convert('RGB')
         image_np = np.array(pil_image, dtype=np.float32)
     except Exception as e:
+        # print(f"PY_FUNC Error loading image {image_path}: {e}")
+        # Возвращаем заглушки нужной формы для y_true
+        num_features_per_box = 4 + 1 + len(CLASSES_LIST_GLOBAL_FOR_DETECTOR)
         return np.zeros((target_height_for_py_func, target_width_for_py_func, 3), dtype=np.float32), \
-            np.zeros((0, 5), dtype=np.float32)
+            np.zeros((MAX_BOXES_PER_IMAGE_FROM_CONFIG, num_features_per_box), dtype=np.float32)
 
-    # parse_xml_annotation теперь будет использовать глобальный CLASSES_LIST_GLOBAL_FOR_DETECTOR
-    objects, _, _, _ = parse_xml_annotation(xml_path)
+    # --- Парсинг XML (как раньше) ---
+    objects, _, _, _ = parse_xml_annotation(xml_path)  # Использует глобальный CLASSES_LIST_GLOBAL_FOR_DETECTOR
 
     if objects is None:
+        # print(f"PY_FUNC Error parsing XML {xml_path}")
+        num_features_per_box = 4 + 1 + len(CLASSES_LIST_GLOBAL_FOR_DETECTOR)
         return np.zeros((target_height_for_py_func, target_width_for_py_func, 3), dtype=np.float32), \
-            np.zeros((0, 5), dtype=np.float32)
+            np.zeros((MAX_BOXES_PER_IMAGE_FROM_CONFIG, num_features_per_box), dtype=np.float32)
 
-    # ... (остальной код этой функции для сборки boxes_list_pixels, class_ids_list и т.д. БЕЗ ИЗМЕНЕНИЙ) ...
+    # --- Предобработка изображения и масштабирование реальных рамок (как раньше) ---
     boxes_list_pixels = []
-    class_ids_list = []
+    class_ids_list_for_gt = []  # Для one-hot encoding классов
     if objects:
         for obj in objects:
             boxes_list_pixels.append([obj['xmin'], obj['ymin'], obj['xmax'], obj['ymax']])
-            class_ids_list.append([float(obj['class_id'])])
+            class_ids_list_for_gt.append(obj['class_id'])
+
     if not boxes_list_pixels:
         boxes_np_pixels = np.zeros((0, 4), dtype=np.float32)
-        class_ids_np = np.zeros((0, 1), dtype=np.float32)
     else:
         boxes_np_pixels = np.array(boxes_list_pixels, dtype=np.float32)
-        class_ids_np = np.array(class_ids_list, dtype=np.float32)
+
     image_tensor_in_py = tf.convert_to_tensor(image_np, dtype=tf.float32)
-    boxes_tensor_pixels_in_py = tf.convert_to_tensor(boxes_np_pixels, dtype=tf.float32)
+    boxes_tensor_pixels_in_py = tf.convert_to_tensor(boxes_np_pixels, dtype=np.float32)
+
     image_processed_tensor, scaled_boxes_norm_tensor = preprocess_image_and_boxes(
         image_tensor_in_py, boxes_tensor_pixels_in_py,
         tf.constant(target_height_for_py_func, dtype=tf.int32),
         tf.constant(target_width_for_py_func, dtype=tf.int32)
     )
-    if tf.shape(scaled_boxes_norm_tensor)[0] > 0:
-        y_true_simple_tensor = tf.concat([scaled_boxes_norm_tensor, tf.cast(class_ids_np, dtype=tf.float32)], axis=1)
-    else:
-        y_true_simple_tensor = tf.zeros((0, 5), dtype=np.float32)
-    return image_processed_tensor.numpy(), y_true_simple_tensor.numpy()
+    # scaled_boxes_norm_tensor имеет форму [num_actual_objects, 4] с нормализованными xmin,ymin,xmax,ymax
+
+    # --- НОВАЯ ЧАСТЬ: Формирование y_true для модели SimpleObjectDetector ---
+    num_actual_objects = tf.shape(scaled_boxes_norm_tensor)[0].numpy()  # Количество реальных объектов на картинке
+    num_classes = len(CLASSES_LIST_GLOBAL_FOR_DETECTOR)
+    num_features_per_box = 4 + 1 + num_classes  # xmin,ymin,xmax,ymax, obj_score, class_probs...
+
+    # Создаем y_true массив, заполненный нулями
+    y_true_target_np = np.zeros((MAX_BOXES_PER_IMAGE_FROM_CONFIG, num_features_per_box), dtype=np.float32)
+
+    if num_actual_objects > 0:
+        # Берем только первые MAX_BOXES_PER_IMAGE объектов, если их больше
+        objects_to_process = min(num_actual_objects, MAX_BOXES_PER_IMAGE_FROM_CONFIG)
+
+        for i in range(objects_to_process):
+            # Координаты (пока просто xmin, ymin, xmax, ymax нормализованные)
+            # В более сложных моделях здесь будет кодирование относительно якорей/сетки (tx,ty,tw,th)
+            y_true_target_np[i, 0:4] = scaled_boxes_norm_tensor[i].numpy()
+
+            # Objectness score (1 для реальных объектов, 0 для пустых слотов)
+            y_true_target_np[i, 4] = 1.0
+
+            # Классы (one-hot encoding)
+            class_id = class_ids_list_for_gt[i]  # Получаем class_id для текущего объекта
+            y_true_target_np[i, 5 + class_id] = 1.0
+
+            # Остальные слоты (от num_actual_objects до MAX_BOXES_PER_IMAGE) уже заполнены нулями,
+    # что означает objectness_score = 0.
+
+    return image_processed_tensor.numpy(), y_true_target_np
 
 
+# В функции load_and_prepare_example_tf_wrapper ИЗМЕНИ Tout для y_true:
 def load_and_prepare_example_tf_wrapper(image_path_tensor, xml_path_tensor,
-                                        target_height_param, target_width_param):  # Убрали classes_list_param
-    img_processed_np, y_true_simple_np = tf.py_function(
+                                        target_height_param, target_width_param):
+    # Определяем количество фичей на бокс для Tout
+    num_output_features_per_box = 4 + 1 + len(CLASSES_LIST_GLOBAL_FOR_DETECTOR)
+
+    img_processed_np, y_true_np = tf.py_function(
         func=load_and_prepare_example_py_func,
-        # classes_list_param больше не передается в inp
         inp=[image_path_tensor, xml_path_tensor, target_height_param, target_width_param],
-        Tout=[tf.float32, tf.float32]
+        Tout=[tf.float32, tf.float32]  # Типы остаются теми же
     )
+
     img_processed_np.set_shape([target_height_param, target_width_param, 3])
-    y_true_simple_np.set_shape([None, 5])
-    return img_processed_np, y_true_simple_np
+    # Новая форма для y_true!
+    y_true_np.set_shape([MAX_BOXES_PER_IMAGE_FROM_CONFIG, num_output_features_per_box])
+
+    return img_processed_np, y_true_np
 
 
 def create_detector_tf_dataset(image_paths_list, xml_paths_list, batch_size,

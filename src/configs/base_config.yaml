@@ -1,7 +1,8 @@
-
-  # Путь к исходному "мастер" датасету
-  master_dataset_path: "data/Master_Dataset"
-
-  # Общие параметры для сохранения результатов
-  logs_base_dir: "logs"         # Базовая папка для логов TensorBoard
-  weights_base_dir: "weights"   # Базовая папка для сохранения весов моделей
+master_dataset_path: "data/Master_Dataset"
+source_defective_road_img_parent_subdir: "Defective_Road_Images"
+source_normal_road_img_parent_subdir: "Normal_Road_Images"
+source_not_road_img_parent_subdir: "Not_Road_Images"
+images_dir: "JPEGImages"
+annotations_dir: "Annotations"
+logs_base_dir: "logs"
+weights_base_dir: "weights"

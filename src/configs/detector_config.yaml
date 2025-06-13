@@ -1,24 +1,14 @@
-# RoadDefectDetector/src/configs/detector_config.yaml
-
-model_name: "CustomObjectDetector" # Имя нашей будущей кастомной модели детектора
-backbone_name: "MobileNetV2"       # Pre-trained основа для детектора
-input_shape: [416, 416, 3]       # Входной размер изображений для детектора
-freeze_backbone: true            # Заморозить ли веса backbone на начальном этапе
-
-# Классы для детектора (ВАЖНО: порядок определяет ID класса, pit=0, crack=1)
+model_name: "CustomObjectDetector"
+backbone_name: "MobileNetV2"
+input_shape: [416, 416, 3]
+freeze_backbone: true
 classes: ["pit", "crack"]
-num_classes: 2                   # Количество классов дефектов
-
-# Примерные параметры для "голов" предсказаний (будем уточнять при реализации модели)
-head_conv_filters: 128           # Количество фильтров в сверточных слоях "головы"
-num_anchors_per_location: 3      # Примерное количество якорей на ячейку (если будем использовать якоря)
-
-# Путь к подготовленному датасету для детектора (относительно корня проекта)
-# Этот датасет мы будем формировать позже, копируя и разделяя данные из master_dataset_path
-prepared_dataset_path: "data/Detector_Dataset_Ready"
-train_ratio: 0.8                 # Доля данных для обучения при разделении
+num_classes: 2
+head_conv_filters: 128
+max_boxes_per_image: 10 # Это значение используется в losses и models
 
 train_params:
-  batch_size: 4                  # Обычно меньше, чем у классификатора, из-за большего размера модели/данных
-  epochs: 50                     # Начальное количество эпох для обучения детектора
-  learning_rate: 0.0001          # Часто для детекторов используют меньший learning rate
+  batch_size: 1
+  epochs: 50 # Это было для classifier, для detector epochs_test_overfit
+  learning_rate: 0.0001
+  epochs_test_overfit: 100 # Для train_detector.py
