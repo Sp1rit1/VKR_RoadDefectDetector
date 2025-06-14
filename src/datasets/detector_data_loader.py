@@ -297,111 +297,145 @@ def create_detector_tf_dataset(image_paths_list, xml_paths_list, batch_size, shu
     return dataset
 
 
-# --- Пример использования (для тестирования этого файла) ---
 if __name__ == '__main__':
-    # --- КОПИЯ БЛОКА if __name__ == '__main__' ИЗ МОЕГО ПРЕДЫДУЩЕГО ПОЛНОГО ОТВЕТА ---
-    # --- (с исправленной логикой загрузки конфигов и формирования путей) ---
-    if not CONFIG_LOAD_SUCCESS:
-        print("\n!!! ВНИМАНИЕ: Конфигурационные файлы не были загружены корректно...")
+    if not CONFIG_LOAD_SUCCESS:  # Проверка, загрузились ли конфиги в начале файла
+        print(
+            "\n!!! ВНИМАНИЕ: Конфигурационные файлы не были загружены корректно. Тестирование может быть неточным или использовать дефолты.")
+
     print(f"--- Тестирование detector_data_loader.py (с y_true для сетки и якорей) ---")
     print(f"Параметры сетки: GRID_HEIGHT={GRID_HEIGHT}, GRID_WIDTH={GRID_WIDTH}")
-    print(f"Якоря (W_norm, H_norm):\n{ANCHORS_WH_NORMALIZED}")
+    print(f"Якоря (W_norm, H_norm) используются внутри py_func:\n{ANCHORS_WH_NORMALIZED}")
     print(f"Количество якорей на ячейку: {NUM_ANCHORS_PER_LOCATION}")
-    print(f"Количество классов: {NUM_CLASSES_DETECTOR}")
+    print(f"Количество классов: {NUM_CLASSES_DETECTOR} ({CLASSES_LIST_GLOBAL_FOR_DETECTOR})")
 
-    def_road_subdir = BASE_CONFIG.get('source_defective_road_img_parent_subdir', "Defective_Road_Images")
-    norm_road_subdir = BASE_CONFIG.get('source_normal_road_img_parent_subdir', "Normal_Road_Images")
-    not_road_subdir = BASE_CONFIG.get('source_not_road_img_parent_subdir', "Not_Road_Images")  # Для кота
+    # --- Используем пути к ПОДГОТОВЛЕННОМУ И РАЗДЕЛЕННОМУ датасету для детектора ---
+    _detector_dataset_ready_path_from_cfg = "data/Detector_Dataset_Ready"
+    if not os.path.isabs(_detector_dataset_ready_path_from_cfg):
+        DETECTOR_DATASET_READY_ABS = os.path.join(_project_root_dir, _detector_dataset_ready_path_from_cfg)
+    else:
+        DETECTOR_DATASET_READY_ABS = _detector_dataset_ready_path_from_cfg
 
-    images_dir_defective = os.path.join(MASTER_DATASET_PATH_ABS, def_road_subdir, _images_subdir_name_cfg)
-    annotations_dir_defective = os.path.join(MASTER_DATASET_PATH_ABS, def_road_subdir, _annotations_subdir_name_cfg)
-    images_dir_normal = os.path.join(MASTER_DATASET_PATH_ABS, norm_road_subdir, _images_subdir_name_cfg)
-    annotations_dir_normal = os.path.join(MASTER_DATASET_PATH_ABS, norm_road_subdir, _annotations_subdir_name_cfg)
-    images_dir_notroad = os.path.join(MASTER_DATASET_PATH_ABS, not_road_subdir, _images_subdir_name_cfg)
-    annotations_dir_notroad = os.path.join(MASTER_DATASET_PATH_ABS, not_road_subdir, _annotations_subdir_name_cfg)
+    # Берем данные из обучающей выборки для теста
+    IMAGES_DIR_FOR_TEST = os.path.join(DETECTOR_DATASET_READY_ABS, "train", _images_subdir_name_cfg)
+    ANNOTATIONS_DIR_FOR_TEST = os.path.join(DETECTOR_DATASET_READY_ABS, "train", _annotations_subdir_name_cfg)
 
-    print(f"\nТестовые пути для детектора (проверь их!):")
-    print(f"  Изображения с дефектами из: {images_dir_defective}")
-    print(f"  Нормальные изображения из: {images_dir_normal}")
-    print(f"  'Не дорога' изображения из: {images_dir_notroad}")
+    print(f"\nТестовые пути для detector_data_loader.py (из разделенного TRAIN сета):")
+    print(f"  Изображения из: {IMAGES_DIR_FOR_TEST}")
+    print(f"  Аннотации из: {ANNOTATIONS_DIR_FOR_TEST}")
 
     example_image_paths = []
     example_xml_paths = []
 
-    # Имена тестовых файлов (ЗАМЕНИ НА СВОИ РЕАЛЬНЫЕ ИМЕНА)
-    test_files_map = {
-        "defect_1": {"img_dir": images_dir_defective, "ann_dir": annotations_dir_defective,
-                     "base_name": "defective_road_01"},  # Пример твоего файла с ямой и трещиной
-        "normal_1": {"img_dir": images_dir_normal, "ann_dir": annotations_dir_normal, "base_name": "normal_road_01"},
-        # Пример нормальной дороги
-        "notroad_1": {"img_dir": images_dir_notroad, "ann_dir": annotations_dir_notroad, "base_name": "not_road_cat_01"}
-        # Пример кота
-    }
-
-    for key, paths_info in test_files_map.items():
-        found_img_for_base = False
-        img_path_abs_candidate = None
-        for ext in ['.jpg', '.jpeg', '.png']:  # Проверяем разные расширения
-            img_path_try = os.path.join(paths_info["img_dir"], paths_info["base_name"] + ext)
-            if os.path.exists(img_path_try):
-                img_path_abs_candidate = img_path_try
-                found_img_for_base = True
-                break
-            # Можно добавить проверку для .JPG, .PNG и т.д. если нужно
-
-        if found_img_for_base:
-            xml_file_abs = os.path.join(paths_info["ann_dir"], paths_info["base_name"] + ".xml")
-            if os.path.exists(xml_file_abs):
-                example_image_paths.append(img_path_abs_candidate)
-                example_xml_paths.append(xml_file_abs)
-                print(f"  Добавлен для теста ({key}): {os.path.basename(img_path_abs_candidate)}")
-            else:
-                print(
-                    f"  ПРЕДУПРЕЖДЕНИЕ: XML {xml_file_abs} не найден для изображения {os.path.basename(img_path_abs_candidate) if img_path_abs_candidate else paths_info['base_name']}")
-        else:
-            print(
-                f"  ПРЕДУПРЕЖДЕНИЕ: Изображение {paths_info['base_name']} с расширениями .jpg/.jpeg/.png не найдено в {paths_info['img_dir']}")
-
-    if not example_image_paths:
-        print("\nОШИБКА: Не найдено ни одного ИЗ ЗАДАННЫХ тестовых файлов для `detector_data_loader.py`.")
+    if not os.path.isdir(IMAGES_DIR_FOR_TEST) or not os.path.isdir(ANNOTATIONS_DIR_FOR_TEST):
+        print(
+            f"\nОШИБКА: Директории для тестовых данных не найдены: {IMAGES_DIR_FOR_TEST} или {ANNOTATIONS_DIR_FOR_TEST}")
+        print(
+            "Убедитесь, что скрипт 'create_data_splits.py' был успешно запущен и создал данные в 'data/Detector_Dataset_Ready/train/'.")
     else:
-        effective_batch_size = min(BATCH_SIZE_FROM_CONFIG, len(example_image_paths))  # Используем BATCH_SIZE из конфига
-        if effective_batch_size == 0 and len(example_image_paths) > 0: effective_batch_size = 1
+        valid_extensions = ['.jpg', '.jpeg', '.png']
+        all_image_files_in_test_dir = []
+        for ext in valid_extensions:
+            all_image_files_in_test_dir.extend(glob.glob(os.path.join(IMAGES_DIR_FOR_TEST, f"*{ext.lower()}")))
+            all_image_files_in_test_dir.extend(glob.glob(os.path.join(IMAGES_DIR_FOR_TEST, f"*{ext.upper()}")))
 
-        if effective_batch_size > 0:
-            print(f"\nСоздание датасета с batch_size = {effective_batch_size}...")
-            dataset = create_detector_tf_dataset(
-                example_image_paths, example_xml_paths, effective_batch_size, shuffle=False
-            )
-            print("\nПример батча из датасета детектора (новый y_true):")
-            try:
-                for i, (images_batch, y_true_batch) in enumerate(dataset.take(1)):
-                    print(f"\n--- Батч {i + 1} (детектор с новым y_true) ---")
-                    print("Форма батча изображений:", images_batch.shape)
-                    print("Форма батча y_true:", y_true_batch.shape)
-                    if y_true_batch.shape[0] > 0:
-                        for k_img_in_batch in range(y_true_batch.shape[0]):  # Итерируемся по картинкам в батче
-                            print(
-                                f"  --- Изображение {k_img_in_batch + 1} в батче ({os.path.basename(example_image_paths[k_img_in_batch])}) ---")
-                            y_true_single_image = y_true_batch[k_img_in_batch]
-                            objectness_scores = y_true_single_image[..., 4]
-                            responsible_cells = tf.where(objectness_scores > 0.5)
-                            if tf.size(responsible_cells) > 0:
-                                print(f"    Найдены 'ответственные' ячейки/якоря (grid_y, grid_x, anchor_idx):")
-                                for cell_coords in responsible_cells.numpy():
-                                    gy, gx, ga = cell_coords
-                                    print(f"      Cell ({gy},{gx}), Anchor {ga}:")
-                                    print(f"        Objectness: {y_true_single_image[gy, gx, ga, 4].numpy():.1f}")
-                                    print(f"        Box (tx,ty,tw,th): {y_true_single_image[gy, gx, ga, 0:4].numpy()}")
-                                    print(f"        Classes (one-hot): {y_true_single_image[gy, gx, ga, 5:].numpy()}")
-                            else:
-                                print("    Не найдено объектов (все objectness < 0.5).")
-            except Exception as e_dataset:
-                print(f"ОШИБКА при итерации по датасету детектора: {e_dataset}")
-                import traceback
+        all_image_files_in_test_dir = sorted(list(set(all_image_files_in_test_dir)))
 
-                traceback.print_exc()
+        for img_path_abs_str in all_image_files_in_test_dir:
+            base_name, _ = os.path.splitext(os.path.basename(img_path_abs_str))
+            xml_file_abs_str = os.path.join(ANNOTATIONS_DIR_FOR_TEST, base_name + ".xml")
+
+            if os.path.exists(xml_file_abs_str):
+                example_image_paths.append(img_path_abs_str)
+                example_xml_paths.append(xml_file_abs_str)
+
+        if not example_image_paths:
+            print(
+                "\nНе найдено совпадающих пар изображение/аннотация в тестовой директории для detector_data_loader.py.")
         else:
-            print("Недостаточно файлов для создания тестового батча (0 файлов найдено или batch_size=0).")
+            print(f"\nНайдено {len(example_image_paths)} пар изображение/аннотация в {IMAGES_DIR_FOR_TEST} для теста.")
 
+            num_test_files_to_load = min(len(example_image_paths), 3)  # Тестируем на 3 случайных файлах или меньше
+            if num_test_files_to_load == 0:
+                print("Нет файлов для создания тестового датасета.")
+            else:
+                # --- ИЗМЕНЕНИЕ: Берем случайные файлы ---
+                import random
+
+                random.seed(None)  # Новая случайность при каждом запуске (или установи число для воспроизводимости)
+
+                paired_files = list(zip(example_image_paths, example_xml_paths))
+                random.shuffle(paired_files)
+                selected_pairs = paired_files[:num_test_files_to_load]
+
+                test_image_paths = [pair[0] for pair in selected_pairs]
+                test_xml_paths = [pair[1] for pair in selected_pairs]
+                # --- КОНЕЦ ИЗМЕНЕНИЯ ---
+
+                print(f"Будет протестировано на {len(test_image_paths)} случайных файлах:")
+                for p_idx, p_path in enumerate(test_image_paths):
+                    print(f"  {p_idx + 1}. {os.path.basename(p_path)}")
+
+                current_test_batch_size = 1  # Для детального просмотра каждого примера
+
+                dataset = create_detector_tf_dataset(
+                    test_image_paths,
+                    test_xml_paths,
+                    batch_size=current_test_batch_size,
+                    shuffle=False  # Для теста на конкретных файлах лучше без перемешивания на уровне Dataset
+                )
+
+                print("\nПример батча из датасета детектора (новый y_true):")
+                try:
+                    for i, (images_batch, y_true_batch) in enumerate(
+                            dataset.take(num_test_files_to_load // current_test_batch_size or 1)):
+                        print(f"\n--- Батч {i + 1} (детектор с новым y_true) ---")
+                        print("Форма батча изображений:", images_batch.shape)
+                        print("Форма батча y_true:", y_true_batch.shape)  # Ожидаем (1, Gh, Gw, A, 5+C)
+
+                        if y_true_batch.shape[0] > 0:  # Проверка, что батч не пустой
+                            for k_img_in_batch in range(
+                                    y_true_batch.shape[0]):  # Итерируемся по картинкам в батче (здесь всегда одна)
+                                current_image_path_index = i * current_test_batch_size + k_img_in_batch
+                                if current_image_path_index < len(test_image_paths):
+                                    current_img_filename_for_print = os.path.basename(
+                                        test_image_paths[current_image_path_index])
+                                else:
+                                    current_img_filename_for_print = "Неизвестный файл (ошибка индекса)"
+
+                                print(
+                                    f"  --- Изображение {k_img_in_batch + 1} в батче ({current_img_filename_for_print}) ---")
+                                y_true_single_image = y_true_batch[k_img_in_batch]  # (Gh, Gw, A, 5+C)
+
+                                # Извлекаем objectness scores (пятый элемент в последнем измерении)
+                                objectness_scores_map = y_true_single_image[..., 4]  # Форма (Gh, Gw, A)
+                                # Находим индексы, где objectness > 0.5 (т.е. где мы назначили объект якорю)
+                                responsible_anchors_indices = tf.where(
+                                    objectness_scores_map > 0.5)  # Форма (Num_responsible_anchors, 3) -> (idx_gh, idx_gw, idx_anchor)
+
+                                if tf.size(responsible_anchors_indices) > 0:
+                                    print(
+                                        f"    Найдено {tf.size(responsible_anchors_indices) // 3} 'ответственных' ячеек/якорей (grid_y, grid_x, anchor_idx):")
+                                    for cell_coords_tf in responsible_anchors_indices:
+                                        gy, gx, ga = cell_coords_tf.numpy()  # Получаем индексы
+                                        print(f"      Ячейка ({gy},{gx}), Якорь_idx {ga}:")
+                                        # Извлекаем данные для этого конкретного якоря
+                                        anchor_data = y_true_single_image[gy, gx, ga]
+                                        print(f"        Objectness: {anchor_data[4].numpy():.1f}")
+                                        print(f"        Box (tx,ty,tw,th): {anchor_data[0:4].numpy()}")
+                                        # Классы начинаются с 5-го индекса
+                                        class_one_hot = anchor_data[5:].numpy()
+                                        print(f"        Classes (one-hot): {class_one_hot}")
+                                        # Находим ID класса, где стоит 1.0
+                                        class_id_detected = np.argmax(class_one_hot)
+                                        if class_one_hot[class_id_detected] > 0.5:  # Проверка, что там действительно 1
+                                            print(
+                                                f"        Обнаружен класс ID: {class_id_detected} ({CLASSES_LIST_GLOBAL_FOR_DETECTOR[class_id_detected]})")
+                                else:
+                                    print(
+                                        f"    Не найдено объектов (все objectness в y_true <= 0.5). Это нормально для негативных примеров.")
+                except Exception as e_dataset:
+                    print(f"ОШИБКА при итерации по датасету детектора: {e_dataset}")
+                    import traceback
+
+                    traceback.print_exc()
     print("\n--- Тестирование detector_data_loader.py (с новым y_true) завершено ---")

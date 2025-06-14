@@ -1,27 +1,59 @@
-model_name: "CustomObjectDetector"
-backbone_name: "MobileNetV2"
-input_shape: [416, 416, 3]
-freeze_backbone: true
-classes: ["pit", "crack"]
-num_classes: 2
-head_conv_filters: 128
-max_boxes_per_image: 10 # Это значение используется в losses и models
+# src/configs/detector_config.yaml
 
-train_params:
-  batch_size: 1
-  epochs: 50 # Это было для classifier, для detector epochs_test_overfit
-  learning_rate: 0.0001
-  epochs_test_overfit: 100 # Для train_detector.py
+# --- Параметры Модели Детектора ---
+model_name: "CustomObjectDetector_MobileNetV2_SSDLikeHead" # Описательное имя твоей модели
+backbone_name: "MobileNetV2"        # Какую pre-trained модель использовать как основу
+input_shape: [416, 416, 3]       # Входной размер изображений для детектора [высота, ширина, каналы]
+                                 # Должен совпадать с target_height/width из data_loader
+freeze_backbone: true          # Заморозить ли веса базовой pre-trained модели
 
+# Параметры для "головы" предсказаний (если у тебя одна основная голова)
+head_conv_filters: 256           # Количество фильтров в сверточных слоях "головы" (было 128, можно увеличить)
 
-anchors_wh_normalized: # [width, height] нормализованные
+# --- Параметры Классов и Якорей ---
+classes: ["pit", "crack"]        # Список классов для детекции. Порядок важен (pit:0, crack:1)
+                                 # Убедись, что совпадает с тем, как друг размечает XML и с CLASSES_LIST_GLOBAL_FOR_DETECTOR
+num_classes: 2                   # Количество классов, должно соответствовать длине списка 'classes'
+
+# Якорные рамки (anchors)
+# Это предварительные значения, их нужно будет подбирать на основе анализа твоего датасета (k-means)
+# Формат: [нормализованная_ширина, нормализованная_высота] относительно всего изображения
+anchors_wh_normalized:
   - [0.05, 0.05]  # Маленький квадратный
   - [0.1,  0.05]  # Маленький горизонтальный
   - [0.05, 0.1]   # Маленький вертикальный
+  # - [0.1, 0.1]    # Средний квадратный (можно добавить больше, если нужно)
+  # - [0.2, 0.1]    # Средний горизонтальный
+  # - [0.1, 0.2]    # Средний вертикальный
 
+num_anchors_per_location: 3    # Количество якорей, используемых в каждой ячейке сетки предсказаний.
+                               # Должно соответствовать количеству пар в anchors_wh_normalized.
 
+# --- Параметры Обучения Детектора ---
+train_params:
+  batch_size: 2                # Уменьши до 1 или 2, если мало VRAM. Для 90+ картинок можно попробовать 2-4.
+  epochs: 50                   # Количество эпох для полноценного обучения (можно начать с 30-50)
+  learning_rate: 0.0001        # Начальная скорость обучения
+  epochs_test_overfit: 100     # Количество эпох для теста на переобучение на малом датасете
+
+# --- Параметры Функции Потерь ---
 loss_weights:
-    coordinates: 1.0  # Вес для потерь координат
-    objectness: 1.0   # Вес для потерь objectness (когда объект есть)
-    no_object: 0.5    # Вес для потерь objectness (когда объекта нет - фон)
-    classification: 1.0 # Вес для потерь классификации
+  coordinates: 1.0             # Вес для потерь координат рамок (box_loss)
+  objectness: 1.0              # Вес для потерь "уверенности в наличии объекта" (objectness_loss) для позитивных якорей
+  no_object: 0.5               # Вес для потерь "уверенности в наличии объекта" для негативных якорей (фон)
+  classification: 1.0          # Вес для потерь классификации объекта (class_loss)
+
+# --- Параметры для Инференса (используются в predict_detector.py) ---
+# Эти значения могут быть переопределены аргументами командной строки,
+# но predict_detector.py будет использовать их как дефолты, если аргументы не переданы.
+predict_params:
+  confidence_threshold: 0.25   # Порог уверенности для отсеивания слабых детекций перед NMS
+  iou_threshold: 0.45          # Порог IoU для Non-Maximum Suppression
+  max_detections: 100          # Максимальное количество объектов, которое может быть обнаружено на одном изображении после NMS
+
+# --- (Опционально) Пути к файлам с разделением на train/val для детектора ---
+# Эти пути будут использоваться в train_detector.py, если create_data_splits.py их создает.
+# Пути относительные от корня проекта.
+# data_splits:
+#   train_file: "data_splits/detector_train_files.txt"
+#   val_file: "data_splits/detector_val_files.txt"
