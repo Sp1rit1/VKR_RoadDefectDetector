@@ -1,6 +1,7 @@
 # RoadDefectDetector/src/datasets/augmentations.py
 import albumentations as A
-import cv2  # OpenCV нужен для некоторых border_mode в albumentations
+import cv2
+import numpy as np  # Может понадобиться для border_value в Affine, если передаем цвет
 
 
 def get_detector_train_augmentations(img_height, img_width):
@@ -9,62 +10,57 @@ def get_detector_train_augmentations(img_height, img_width):
     для обучения детектора объектов.
     """
     return A.Compose([
-        # --- Геометрические аугментации ---
         A.HorizontalFlip(p=0.5),
-        # A.VerticalFlip(p=0.5), # Можно добавить, если объекты не имеют строгой ориентации "верх-низ"
 
-        # Легкий сдвиг, масштабирование и поворот
-        A.ShiftScaleRotate(
-            shift_limit=0.0625,  # сдвиг изображения на +/- 6.25%
-            scale_limit=0.1,  # масштабирование на +/- 10%
-            rotate_limit=10,  # поворот на +/- 10 градусов
-            p=0.5,  # вероятность применения
-            border_mode=cv2.BORDER_CONSTANT,
-            value=0  # Заполнять черным, если изображение смещается
+        A.Affine(
+            scale=(0.85, 1.15),
+            translate_percent=(-0.0625, 0.0625),
+            rotate=(-10, 10),
+            shear=(-5, 5),
+            p=0.5,
+            border_mode=cv2.BORDER_CONSTANT,  # Правильный параметр для режима
+            border_value=0,  # Правильный параметр для значения заполнения (черный)
+            # Можно также (0,0,0) для RGB или np.array([0,0,0])
+            # cval_mask=0, # Если бы были маски
+            keep_ratio=True
         ),
 
-        # --- Аугментации, меняющие цвет/яркость (умеренные) ---
         A.RandomBrightnessContrast(
-            brightness_limit=0.15,  # яркость +/- 15%
-            contrast_limit=0.15,  # контраст +/- 15%
+            brightness_limit=0.15,
+            contrast_limit=0.15,
             p=0.5
         ),
         A.HueSaturationValue(
-            hue_shift_limit=10,  # сдвиг оттенка +/- 10
-            sat_shift_limit=20,  # сдвиг насыщенности +/- 20
-            val_shift_limit=10,  # сдвиг значения (яркости) +/- 10
+            hue_shift_limit=10,
+            sat_shift_limit=20,
+            val_shift_limit=10,
             p=0.3
         ),
-        # A.RGBShift(r_shift_limit=10, g_shift_limit=10, b_shift_limit=10, p=0.2), # Можно добавить, если нужно больше вариативности цвета
 
-        # --- Аугментации, добавляющие шум/размытие (легкие) ---
-        A.GaussNoise(var_limit=(5.0, 30.0), p=0.2),  # Легкий гауссовский шум
+        # Для GaussNoise, параметр var_limit (диапазон для дисперсии) должен быть валидным.
+        # Предупреждение могло быть связано с одновременным использованием mean,
+        # или это особенность конкретной версии albumentations.
+        # Попробуем только с var_limit.
+        A.GaussNoise(var_limit=(10.0, 50.0), p=0.2),
 
         A.OneOf([
             A.MotionBlur(p=0.5, blur_limit=(3, 5)),
             A.MedianBlur(blur_limit=3, p=0.3),
             A.Blur(blur_limit=3, p=0.3),
-        ], p=0.2),  # Одна из этих трех с вероятностью 20%
-
-        # (Опционально и осторожно) Аугментации, которые могут удалить часть информации
-        # A.RandomFog(fog_coef_lower=0.1, fog_coef_upper=0.3, alpha_coef=0.1, p=0.1),
-        # A.RandomRain(p=0.1, brightness_coefficient=0.9, drop_length=10, drop_width=1, blur_value=3),
-
-        # Важно: Не используем аугментации, которые сильно меняют глобальную геометрию или размер
-        # перед основным ресайзом в data_loader, если только это не контролируется.
-        # RandomSizedBBoxSafeCrop требует, чтобы после него был Resize до целевого размера.
+        ], p=0.2),
 
     ], bbox_params=A.BboxParams(
-        format='pascal_voc',  # Наши bounding box'ы в формате [xmin, ymin, xmax, ymax]
+        format='pascal_voc',
         label_fields=['class_labels_for_albumentations'],
-        min_visibility=0.25,  # Минимальная видимая часть рамки после аугментации
-        min_area=25  # Минимальная площадь рамки в пикселях (например, 5x5)
+        min_visibility=0.25,
+        min_area=25
     ))
 
 
 if __name__ == '__main__':
-    print("--- Тестирование augmentations.py (с НОРМАЛЬНЫМИ параметрами) ---")
-
+    print("--- Тестирование augmentations.py (с ИСПРАВЛЕННЫМИ параметрами для Affine/GaussNoise) ---")
+    # ... (остальной тестовый код из if __name__ == '__main__' блока остается таким же) ...
+    # Скопируй его из предыдущей версии augmentations.py
     test_height = 416
     test_width = 416
 
@@ -77,7 +73,7 @@ if __name__ == '__main__':
                 f"  - {t.__class__.__name__} (p={t.p if hasattr(t, 'p') else (t.always_apply if hasattr(t, 'always_apply') else 'N/A')})")
 
     try:
-        import numpy as np
+        # import numpy as np # Уже импортирован в начале файла
         from PIL import Image as PILImage
         import matplotlib.pyplot as plt
 
@@ -113,7 +109,7 @@ if __name__ == '__main__':
 
             axes[i].imshow(aug_image);
             axes[i].set_title(f"Аугментация {i}")
-            for xmin, ymin, xmax, ymax in aug_bboxes:
+            for xmin, ymin, xmax, ymax in aug_bboxes:  # Рамки уже в пикселях
                 rect = plt.Rectangle((xmin, ymin), xmax - xmin, ymax - ymin, fill=False, edgecolor='lime', linewidth=1)
                 axes[i].add_patch(rect)
 

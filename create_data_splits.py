@@ -36,13 +36,14 @@ if not os.path.isabs(MASTER_DATASET_PATH_FROM_CONFIG):
 else:
     MASTER_DATASET_PATH_ABS = Path(MASTER_DATASET_PATH_FROM_CONFIG).resolve()
 
-# Имена подпапок в Master_Dataset_Path
+# Имена подпапок в Master_Dataset_Path (из base_config.yaml)
+# Мы ожидаем, что эти ключи есть в BASE_CONFIG и указывают на имена папок категорий
 SOURCE_SUBDIRS_KEYS = [
     'source_defective_road_img_parent_subdir',
     'source_normal_road_img_parent_subdir',
     'source_not_road_img_parent_subdir'
 ]
-DEFAULT_SOURCE_SUBDIR_NAMES = {
+DEFAULT_SOURCE_SUBDIR_NAMES = {  # Дефолтные имена, если ключи не найдены в конфиге
     'source_defective_road_img_parent_subdir': "Defective_Road_Images",
     'source_normal_road_img_parent_subdir': "Normal_Road_Images",
     'source_not_road_img_parent_subdir': "Not_Road_Images"
@@ -51,7 +52,7 @@ IMAGES_SUBFOLDER_NAME_CFG = BASE_CONFIG.get('dataset', {}).get('images_dir', 'JP
 ANNOTATIONS_SUBFOLDER_NAME_CFG = BASE_CONFIG.get('dataset', {}).get('annotations_dir', 'Annotations')
 
 # Целевая директория для разделенного датасета детектора
-# Будем использовать структуру, которую ты показал: data/Detector_Dataset_Ready/
+# Будем использовать структуру: data/Detector_Dataset_Ready/
 DETECTOR_TARGET_ROOT_FROM_CONFIG = "data/Detector_Dataset_Ready"  # Ты можешь вынести это в конфиг, если хочешь
 DETECTOR_TARGET_ROOT_ABS = (_current_project_root / DETECTOR_TARGET_ROOT_FROM_CONFIG).resolve()
 
@@ -66,24 +67,29 @@ def collect_all_master_data_paths():
     print(f"\n--- Сбор путей из мастер-датасета: {MASTER_DATASET_PATH_ABS} ---")
 
     for subfolder_key in SOURCE_SUBDIRS_KEYS:
+        # Получаем имя родительской подпапки (Defective_Road_Images, Normal_Road_Images, Not_Road_Images)
         parent_subfolder_name = BASE_CONFIG.get(subfolder_key, DEFAULT_SOURCE_SUBDIR_NAMES.get(subfolder_key))
         if not parent_subfolder_name:
-            print(f"  ПРЕДУПРЕЖДЕНИЕ: Ключ для подпапки {subfolder_key} не найден в base_config.yaml. Пропускаем.")
+            print(
+                f"  ПРЕДУПРЕЖДЕНИЕ: Ключ для подпапки {subfolder_key} не найден в base_config.yaml и нет дефолта. Пропускаем.")
             continue
 
+        # Пути к папкам JPEGImages и Annotations внутри родительской подпапки
         images_dir_path = MASTER_DATASET_PATH_ABS / parent_subfolder_name / IMAGES_SUBFOLDER_NAME_CFG
         annotations_dir_path = MASTER_DATASET_PATH_ABS / parent_subfolder_name / ANNOTATIONS_SUBFOLDER_NAME_CFG
 
         print(f"  Проверка категории: {parent_subfolder_name}")
         if not images_dir_path.is_dir():
-            print(f"    ПРЕДУПРЕЖДЕНИЕ: Директория изображений {images_dir_path} не найдена. Пропускаем.")
+            print(f"    ПРЕДУПРЕЖДЕНИЕ: Директория изображений {images_dir_path} не найдена. Пропускаем эту категорию.")
             continue
         if not annotations_dir_path.is_dir():
-            print(f"    ПРЕДУПРЕЖДЕНИЕ: Директория аннотаций {annotations_dir_path} не найдена. Пропускаем.")
+            print(
+                f"    ПРЕДУПРЕЖДЕНИЕ: Директория аннотаций {annotations_dir_path} не найдена. Пропускаем эту категорию.")
             continue
 
         image_files_in_subdir = []
-        for ext_pattern in ['*.jpg', '*.jpeg', '*.png']:  # Ищем без учета регистра через Path.glob
+        # Ищем изображения с разными расширениями, без учета регистра через Path.glob
+        for ext_pattern in ['*.jpg', '*.jpeg', '*.png']:
             image_files_in_subdir.extend(list(images_dir_path.glob(ext_pattern)))
             image_files_in_subdir.extend(list(images_dir_path.glob(ext_pattern.upper())))  # для .JPG и т.д.
 
@@ -94,7 +100,8 @@ def collect_all_master_data_paths():
             print(f"    Изображения не найдены в {images_dir_path}.")
             continue
 
-        print(f"    Найдено {len(image_files_in_subdir)} изображений в {images_dir_path.name}")
+        print(
+            f"    Найдено {len(image_files_in_subdir)} изображений в {images_dir_path.name} (категория: {parent_subfolder_name})")
 
         for img_path_obj in image_files_in_subdir:
             base_name = img_path_obj.stem  # Имя файла без расширения
@@ -109,7 +116,8 @@ def collect_all_master_data_paths():
     if not all_image_annotation_pairs:
         print("\nОШИБКА: Не найдено ни одной валидной пары изображение/аннотация в мастер-датасете.")
     else:
-        print(f"\nВсего найдено {len(all_image_annotation_pairs)} валидных пар изображение/аннотация.")
+        print(
+            f"\nВсего найдено {len(all_image_annotation_pairs)} валидных пар изображение/аннотация из всех категорий мастер-датасета.")
 
     return all_image_annotation_pairs
 
@@ -133,6 +141,7 @@ def split_and_copy_to_detector_dataset(all_pairs, target_root_dir, train_ratio, 
 
     # Функция для копирования
     def copy_pairs_to_split(pairs_to_copy, split_name):
+        # Целевые папки для изображений и аннотаций этого split'а
         target_images_dir = target_root_dir / split_name / IMAGES_SUBFOLDER_NAME_CFG
         target_annotations_dir = target_root_dir / split_name / ANNOTATIONS_SUBFOLDER_NAME_CFG
 
@@ -145,6 +154,7 @@ def split_and_copy_to_detector_dataset(all_pairs, target_root_dir, train_ratio, 
             img_src_path = Path(img_src_path_str)
             xml_src_path = Path(xml_src_path_str)
 
+            # Используем только имя файла, без исходной структуры папок категорий
             img_dst_path = target_images_dir / img_src_path.name
             xml_dst_path = target_annotations_dir / xml_src_path.name
 
@@ -165,12 +175,12 @@ def split_and_copy_to_detector_dataset(all_pairs, target_root_dir, train_ratio, 
         if user_input == 'yes':
             print(f"Очистка существующей целевой директории: {DETECTOR_TARGET_ROOT_ABS}")
             shutil.rmtree(DETECTOR_TARGET_ROOT_ABS)
-            DETECTOR_TARGET_ROOT_ABS.mkdir(parents=True, exist_ok=True)
+            DETECTOR_TARGET_ROOT_ABS.mkdir(parents=True, exist_ok=True)  # Создаем заново
         else:
             print("Операция отменена пользователем. Существующая директория не будет изменена.")
             return
     else:
-        DETECTOR_TARGET_ROOT_ABS.mkdir(parents=True, exist_ok=True)
+        DETECTOR_TARGET_ROOT_ABS.mkdir(parents=True, exist_ok=True)  # Создаем, если не существует
 
     copy_pairs_to_split(train_pairs, "train")
     copy_pairs_to_split(val_pairs, "validation")
@@ -186,7 +196,8 @@ if __name__ == "__main__":
     if not MASTER_DATASET_PATH_ABS.is_dir():
         print(f"\nОШИБКА: Директория мастер-датасета '{MASTER_DATASET_PATH_ABS}' не найдена.")
         print("Пожалуйста, проверьте путь в 'src/configs/base_config.yaml' -> 'master_dataset_path'.")
-        print("Убедитесь, что датасет от друга (с подпапками Defective_Road_Images и т.д.) находится по этому пути.")
+        print(
+            "Убедитесь, что датасет от друга (с подпапками Defective_Road_Images и т.д., и внутри них JPEGImages/Annotations) находится по этому пути.")
     else:
         all_data_pairs = collect_all_master_data_paths()
         if all_data_pairs:

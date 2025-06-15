@@ -1,13 +1,14 @@
-# train_detector.py
+# RoadDefectDetector/train_detector.py
 import tensorflow as tf
 import yaml
 import os
 import datetime
 import glob
 import sys
+import numpy as np  # Может понадобиться для некоторых операций с путями или данными
 
 # --- Определяем корень проекта и добавляем src в sys.path для корректных импортов ---
-_project_root = os.path.dirname(os.path.abspath(__file__))
+_project_root = os.path.dirname(os.path.abspath(__file__))  # Корень проекта
 _src_path = os.path.join(_project_root, 'src')
 if _src_path not in sys.path:
     sys.path.insert(0, _src_path)
@@ -15,12 +16,17 @@ if _src_path not in sys.path:
 # --- Импорты из твоих модулей в src ---
 from datasets.detector_data_loader import (
     create_detector_tf_dataset,
-    MASTER_DATASET_PATH_ABS as CFG_MASTER_DATASET_PATH,  # Путь к мастер-датасету из data_loader'а
-    _images_subdir_name_cfg as CFG_IMAGES_SUBDIR,  # Имя подпапки с картинками из data_loader'а
-    _annotations_subdir_name_cfg as CFG_ANNOTATIONS_SUBDIR  # Имя подпапки с аннотациями из data_loader'а
+    TARGET_IMG_HEIGHT as DET_TARGET_IMG_HEIGHT,  # Берем из data_loader для консистентности
+    TARGET_IMG_WIDTH as DET_TARGET_IMG_WIDTH,
+    CLASSES_LIST_GLOBAL_FOR_DETECTOR,
+    # ANCHORS_WH_NORMALIZED, # Якоря теперь в detector_config
+    # NUM_ANCHORS_PER_LOCATION,
+    # GRID_HEIGHT,
+    # GRID_WIDTH,
+    # NUM_CLASSES_DETECTOR
 )
 from models.object_detector import build_object_detector_v1
-from losses.detection_losses import compute_detector_loss_v1
+from losses.detection_losses import compute_detector_loss_v1  # Убедись, что имя функции правильное
 
 # --- Загрузка Конфигураций ---
 _base_config_path = os.path.join(_project_root, 'src', 'configs', 'base_config.yaml')
@@ -28,214 +34,228 @@ _detector_config_path = os.path.join(_project_root, 'src', 'configs', 'detector_
 
 BASE_CONFIG = {}
 DETECTOR_CONFIG = {}
-CONFIG_LOAD_SUCCESS_TRAIN = True
+CONFIG_LOAD_SUCCESS_TRAIN_DET = True
 
 try:
     with open(_base_config_path, 'r', encoding='utf-8') as f:
         BASE_CONFIG = yaml.safe_load(f)
-    if not isinstance(BASE_CONFIG, dict): BASE_CONFIG = {}; CONFIG_LOAD_SUCCESS_TRAIN = False
+    if not isinstance(BASE_CONFIG, dict): BASE_CONFIG = {}; CONFIG_LOAD_SUCCESS_TRAIN_DET = False
 except FileNotFoundError:
-    CONFIG_LOAD_SUCCESS_TRAIN = False; print(f"ОШИБКА: base_config.yaml не найден.")
+    CONFIG_LOAD_SUCCESS_TRAIN_DET = False;
+    print(f"ОШИБКА (train_detector.py): base_config.yaml не найден.")
 except yaml.YAMLError:
-    CONFIG_LOAD_SUCCESS_TRAIN = False; print(f"ОШИБКА: YAML в base_config.yaml.")
+    CONFIG_LOAD_SUCCESS_TRAIN_DET = False;
+    print(f"ОШИБКА (train_detector.py): YAML в base_config.yaml.")
 
 try:
     with open(_detector_config_path, 'r', encoding='utf-8') as f:
         DETECTOR_CONFIG = yaml.safe_load(f)
-    if not isinstance(DETECTOR_CONFIG, dict): DETECTOR_CONFIG = {}; CONFIG_LOAD_SUCCESS_TRAIN = False
+    if not isinstance(DETECTOR_CONFIG, dict): DETECTOR_CONFIG = {}; CONFIG_LOAD_SUCCESS_TRAIN_DET = False
 except FileNotFoundError:
-    CONFIG_LOAD_SUCCESS_TRAIN = False; print(f"ОШИБКА: detector_config.yaml не найден.")
+    CONFIG_LOAD_SUCCESS_TRAIN_DET = False;
+    print(f"ОШИБКА (train_detector.py): detector_config.yaml не найден.")
 except yaml.YAMLError:
-    CONFIG_LOAD_SUCCESS_TRAIN = False; print(f"ОШИБКА: YAML в detector_config.yaml.")
+    CONFIG_LOAD_SUCCESS_TRAIN_DET = False;
+    print(f"ОШИБКА (train_detector.py): YAML в detector_config.yaml.")
 
-if not CONFIG_LOAD_SUCCESS_TRAIN:
-    print(
-        "ОШИБКА: Не удалось загрузить один или несколько файлов конфигурации. Используются дефолты, что может быть некорректно.")
-    # Задаем минимальные дефолты, чтобы скрипт не упал сразу, но это нужно исправить
-    DETECTOR_CONFIG.setdefault('train_params', {'batch_size': 1, 'learning_rate': 0.0001, 'epochs_test_overfit': 10})
-    DETECTOR_CONFIG.setdefault('input_shape', [416, 416, 3])
-    BASE_CONFIG.setdefault('logs_base_dir', 'logs')
-    BASE_CONFIG.setdefault('weights_base_dir', 'weights')
+if not CONFIG_LOAD_SUCCESS_TRAIN_DET:
+    print("ОШИБКА: Не удалось загрузить один или несколько файлов конфигурации для train_detector.py. Выход.")
+    exit()
+
+# --- Параметры из Конфигов ---
+# Пути к разделенному датасету детектора
+_detector_dataset_ready_path_rel = "data/Detector_Dataset_Ready"  # Ожидаемый путь к папке с train/val
+DETECTOR_DATASET_READY_ABS = os.path.join(_project_root, _detector_dataset_ready_path_rel)
+
+IMAGES_SUBDIR_NAME_DET = BASE_CONFIG.get('dataset', {}).get('images_dir', 'JPEGImages')
+ANNOTATIONS_SUBDIR_NAME_DET = BASE_CONFIG.get('dataset', {}).get('annotations_dir', 'Annotations')
+
+# Параметры обучения
+TRAIN_PARAMS_DET = DETECTOR_CONFIG.get('train_params', {})
+BATCH_SIZE_DET = TRAIN_PARAMS_DET.get('batch_size', 2)
+EPOCHS_DET = TRAIN_PARAMS_DET.get('epochs', 50)
+LEARNING_RATE_DET = TRAIN_PARAMS_DET.get('learning_rate', 0.0001)
+USE_AUGMENTATION_TRAIN = DETECTOR_CONFIG.get('use_augmentation', False)
+
+# Параметры для логов и весов
+LOGS_BASE_DIR_ABS = os.path.join(_project_root, BASE_CONFIG.get('logs_base_dir', 'logs'))
+WEIGHTS_BASE_DIR_ABS = os.path.join(_project_root, BASE_CONFIG.get('weights_base_dir', 'weights'))
 
 
-def collect_all_data_paths():
-    """Собирает пути ко всем изображениям и аннотациям из мастер-датасета."""
-    source_subfolders_keys = [
-        'source_defective_road_img_parent_subdir',
-        'source_normal_road_img_parent_subdir',
-        'source_not_road_img_parent_subdir'
-    ]
-    default_subfolder_names = {
-        'source_defective_road_img_parent_subdir': "Defective_Road_Images",
-        'source_normal_road_img_parent_subdir': "Normal_Road_Images",
-        'source_not_road_img_parent_subdir': "Not_Road_Images"
-    }
+def collect_split_data_paths(split_dir_abs_path, images_subdir, annotations_subdir):
+    """Собирает пути к изображениям и аннотациям для указанного разделения (train/val)."""
+    image_paths = []
+    xml_paths = []
 
-    all_image_paths = []
-    all_xml_paths = []
+    current_images_dir = os.path.join(split_dir_abs_path, images_subdir)
+    current_annotations_dir = os.path.join(split_dir_abs_path, annotations_subdir)
 
-    print(f"\n--- Сбор путей к данным для детектора ---")
-    print(f"Корневая папка мастер-датасета: {CFG_MASTER_DATASET_PATH}")
-
-    for subfolder_key in source_subfolders_keys:
-        subfolder_name = BASE_CONFIG.get(subfolder_key, default_subfolder_names.get(subfolder_key))
-        if not subfolder_name:  # Если ключ не найден и нет дефолта
-            print(f"  ПРЕДУПРЕЖДЕНИЕ: Ключ для подпапки {subfolder_key} не найден в base_config.yaml. Пропускаем.")
-            continue
-
-        current_images_dir = os.path.join(CFG_MASTER_DATASET_PATH, subfolder_name, CFG_IMAGES_SUBDIR)
-        current_annotations_dir = os.path.join(CFG_MASTER_DATASET_PATH, subfolder_name, CFG_ANNOTATIONS_SUBDIR)
-
-        # print(f"  Проверка директории изображений: {current_images_dir}")
-        # print(f"  Проверка директории аннотаций: {current_annotations_dir}")
-
-        if not os.path.isdir(current_images_dir):  # Проверяем только папку с изображениями
-            # print(f"    ПРЕДУПРЕЖДЕНИЕ: Директория изображений {current_images_dir} не найдена. Пропускаем категорию '{subfolder_name}'.")
-            continue
-        if not os.path.isdir(current_annotations_dir):  # Проверяем только папку с изображениями
-            # print(f"    ПРЕДУПРЕЖДЕНИЕ: Директория аннотаций {current_annotations_dir} не найдена. Пропускаем категорию '{subfolder_name}'.")
-            continue
-
-        valid_extensions = ['.jpg', '.jpeg', '.png']
-        image_files_in_subdir = []
-        for ext in valid_extensions:
-            image_files_in_subdir.extend(glob.glob(os.path.join(current_images_dir, f"*{ext.lower()}")))
-            image_files_in_subdir.extend(glob.glob(os.path.join(current_images_dir, f"*{ext.upper()}")))
-
-        # Удаляем дубликаты, если glob нашел и .jpg и .JPG
-        image_files_in_subdir = sorted(list(set(image_files_in_subdir)))
-
-        if image_files_in_subdir:
-            print(f"  Найдено {len(image_files_in_subdir)} изображений в {current_images_dir}")
-            for img_path in image_files_in_subdir:
-                base_name, _ = os.path.splitext(os.path.basename(img_path))
-                xml_path = os.path.join(current_annotations_dir, base_name + ".xml")
-                if os.path.exists(xml_path):
-                    all_image_paths.append(img_path)
-                    all_xml_paths.append(xml_path)
-                # else:
-                # print(f"    ПРЕДУПРЕЖДЕНИЕ: XML для {os.path.basename(img_path)} не найден в {current_annotations_dir}")
-        # else:
-        # print(f"    Изображения не найдены в {current_images_dir}")
-
-    if not all_image_paths:
-        print("\nОШИБКА: Не найдено ни одной валидной пары изображение/аннотация во всех категориях.")
+    if not os.path.isdir(current_images_dir) or not os.path.isdir(current_annotations_dir):
         print(
-            "Проверьте структуру папок и пути в base_config.yaml (master_dataset_path, source_*_subdirs, images_dir, annotations_dir).")
-    else:
-        print(f"\nВсего найдено {len(all_image_paths)} пар изображение/аннотация для датасета детектора.")
+            f"  ПРЕДУПРЕЖДЕНИЕ: Директория изображений ({current_images_dir}) или аннотаций ({current_annotations_dir}) не найдена для этого split. Пропускаем.")
+        return image_paths, xml_paths
 
-    return all_image_paths, all_xml_paths
+    valid_extensions = ['.jpg', '.jpeg', '.png']
+    image_files_in_split = []
+    for ext in valid_extensions:
+        image_files_in_split.extend(glob.glob(os.path.join(current_images_dir, f"*{ext.lower()}")))
+        image_files_in_split.extend(glob.glob(os.path.join(current_images_dir, f"*{ext.upper()}")))
+
+    image_files_in_split = sorted(list(set(image_files_in_split)))
+
+    for img_path in image_files_in_split:
+        base_name, _ = os.path.splitext(os.path.basename(img_path))
+        xml_path = os.path.join(current_annotations_dir, base_name + ".xml")
+        if os.path.exists(xml_path):
+            image_paths.append(img_path)
+            xml_paths.append(xml_path)
+        else:
+            print(
+                f"    ПРЕДУПРЕЖДЕНИЕ (collect_split): XML для {os.path.basename(img_path)} не найден в {current_annotations_dir}. Изображение пропущено для этого split.")
+
+    return image_paths, xml_paths
 
 
 def train_detector_main():
-    print("\n--- Обучение Детектора Объектов (Кастомная Модель v1) ---")
+    print("\n--- Обучение Детектора Объектов (Кастомная Модель v1 с Train/Val) ---")
 
-    # 1. Сбор всех данных (пока без разделения на train/val для теста на переобучение)
-    image_paths, xml_paths = collect_all_data_paths()
+    # 1. Сбор путей к данным из разделенных папок
+    train_split_dir = os.path.join(DETECTOR_DATASET_READY_ABS, "train")
+    val_split_dir = os.path.join(DETECTOR_DATASET_READY_ABS, "validation")
 
-    if not image_paths:
-        return
+    print(f"\nСбор обучающих данных из: {train_split_dir}")
+    train_image_paths, train_xml_paths = collect_split_data_paths(train_split_dir, IMAGES_SUBDIR_NAME_DET,
+                                                                  ANNOTATIONS_SUBDIR_NAME_DET)
 
-    # Для теста на переобучение используем все найденные данные (их должно быть мало)
-    # В будущем здесь будет разделение на train/val
-    train_image_paths = image_paths
-    train_xml_paths = xml_paths
-    # val_image_paths, val_xml_paths = [], [] # Пока валидация не используется для этого теста
+    print(f"\nСбор валидационных данных из: {val_split_dir}")
+    val_image_paths, val_xml_paths = collect_split_data_paths(val_split_dir, IMAGES_SUBDIR_NAME_DET,
+                                                              ANNOTATIONS_SUBDIR_NAME_DET)
 
-    print(f"Используется {len(train_image_paths)} изображений для теста на переобучение.")
-    if len(train_image_paths) == 0:
-        print("Нет данных для обучения. Выход.")
-        return
-    if len(train_image_paths) > 20:  # Ограничение для теста на переобучение
+    if not train_image_paths:
+        print("ОШИБКА: Обучающие данные не найдены. Убедитесь, что 'create_data_splits.py' был успешно запущен.")
         print(
-            "ПРЕДУПРЕЖДЕНИЕ: Слишком много данных для простого теста на переобучение. Будет использовано не более 20.")
-        # Можно добавить логику выбора случайных 20, но пока просто обрежем
-        # train_image_paths = train_image_paths[:20]
-        # train_xml_paths = train_xml_paths[:20]
-        # print(f"Используется {len(train_image_paths)} изображений после ограничения.")
-
-    # 2. Создание датасета
-    batch_size_cfg = DETECTOR_CONFIG.get('train_params', {}).get('batch_size', 1)
-    # Для теста на переобучение на очень малом датасете (3-6 картинок) лучше batch_size=1
-    # Если у тебя всего 3 картинки, то batch_size должен быть 1.
-    # Если картинок больше, можно попробовать batch_size из конфига.
-    # Мы УЖЕ установили BATCH_SIZE = 1 в detector_data_loader.py для теста, так что это должно быть согласовано.
-    # Но detector_data_loader.py теперь читает batch_size из конфига.
-    # Убедимся, что для этого теста batch_size = 1
-    current_test_batch_size = 1
-    if len(train_image_paths) < current_test_batch_size:  # Если файлов меньше чем батч
-        print(
-            f"Количество файлов ({len(train_image_paths)}) меньше чем тестовый batch_size ({current_test_batch_size}). Пропуск обучения.")
+            f"Ожидаемая директория: {train_split_dir}/{IMAGES_SUBDIR_NAME_DET} и {train_split_dir}/{ANNOTATIONS_SUBDIR_NAME_DET}")
         return
 
-    print(f"\nСоздание TensorFlow датасета с batch_size = {current_test_batch_size}...")
+    print(f"\nНайдено для обучения: {len(train_image_paths)} изображений.")
+    if val_image_paths:
+        print(f"Найдено для валидации: {len(val_image_paths)} изображений.")
+    else:
+        print("ПРЕДУПРЕЖДЕНИЕ: Валидационные данные не найдены или пусты. Обучение будет без валидации на лету.")
+
+    # 2. Создание датасетов
+    print(f"\nСоздание TensorFlow датасетов...")
+    print(f"  Параметры для датасета: Batch Size={BATCH_SIZE_DET}, Аугментация для train={USE_AUGMENTATION_TRAIN}")
+
     train_dataset_detector = create_detector_tf_dataset(
         train_image_paths,
         train_xml_paths,
-        batch_size=current_test_batch_size,  # Используем тестовый batch_size
-        # target_height/width/classes берутся из глобальных переменных внутри detector_data_loader
-        shuffle=True  # Перемешиваем даже для теста
+        batch_size=BATCH_SIZE_DET,
+        shuffle=True,
+        augment=USE_AUGMENTATION_TRAIN  # Используем флаг из конфига
     )
 
+    validation_dataset_detector = None
+    if val_image_paths:
+        validation_dataset_detector = create_detector_tf_dataset(
+            val_image_paths,
+            val_xml_paths,
+            batch_size=BATCH_SIZE_DET,  # Можно использовать такой же или больший batch_size для валидации
+            shuffle=False,  # Валидацию не перемешиваем
+            augment=False  # Аугментация на валидации НЕ применяется
+        )
+
     if train_dataset_detector is None:
-        print("Не удалось создать датасет для детектора. Обучение прервано.")
+        print("Не удалось создать обучающий датасет для детектора. Обучение прервано.")
         return
 
-    # Проверка, что датасет не пуст
+    # Проверка, что датасеты не пусты
     try:
         for _ in train_dataset_detector.take(1): pass
-        print("Датасет для детектора успешно создан и содержит данные.")
+        print("Обучающий датасет для детектора успешно создан и содержит данные.")
+        if validation_dataset_detector:
+            for _ in validation_dataset_detector.take(1): pass
+            print("Валидационный датасет для детектора успешно создан и содержит данные.")
+    except tf.errors.OutOfRangeError:  # Может возникнуть, если датасет пуст после take(1)
+        print("ОШИБКА: Один из датасетов (train или val) оказался пустым после попытки взять первый батч.")
+        return
     except Exception as e_ds_check:
         print(f"ОШИБКА: Датасет для детектора пуст или произошла ошибка при доступе: {e_ds_check}")
         return
 
     # 3. Создание и компиляция модели
     print("\nСоздание модели детектора (build_object_detector_v1)...")
-    model = build_object_detector_v1()  # Используем новую модель
-    print("\nСтруктура модели детектора:")
-    model.summary(line_length=120)
+    model = build_object_detector_v1()
+    # print("\nСтруктура модели детектора:") # Можно раскомментировать для очень детального вывода
+    # model.summary(line_length=150)
 
-    learning_rate_cfg = DETECTOR_CONFIG.get('train_params', {}).get('learning_rate', 0.0001)
-    print(f"\nКомпиляция модели с learning_rate = {learning_rate_cfg}...")
-    model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=learning_rate_cfg),
-                  loss=compute_detector_loss_v1)  # Используем новую функцию потерь
+    print(f"\nКомпиляция модели с learning_rate = {LEARNING_RATE_DET}...")
+    model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=LEARNING_RATE_DET),
+                  loss=compute_detector_loss_v1)
 
     # 4. Callbacks
-    logs_dir_abs = os.path.join(_project_root, BASE_CONFIG.get('logs_base_dir', 'logs'),
-                                "detector_fit_v1_overfit_test", datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
-    tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=logs_dir_abs, histogram_freq=1)
+    log_dir = os.path.join(LOGS_BASE_DIR_ABS, "detector_fit_v1_full", datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
+    tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=log_dir, histogram_freq=1)
 
-    weights_dir_abs = os.path.join(_project_root, BASE_CONFIG.get('weights_base_dir', 'weights'))
-    os.makedirs(weights_dir_abs, exist_ok=True)
-    checkpoint_filepath = os.path.join(weights_dir_abs,
-                                       'detector_v1_overfit_test_epoch_{epoch:02d}.keras')  # Сохраняем .keras
+    os.makedirs(WEIGHTS_BASE_DIR_ABS, exist_ok=True)
 
-    model_checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(
-        filepath=checkpoint_filepath,
-        save_weights_only=False,  # Сохраняем всю модель
-        save_freq='epoch'  # Сохраняем после каждой эпохи для теста
-    )
-    callbacks_list = [tensorboard_callback, model_checkpoint_callback]
+    callbacks_list = [tensorboard_callback]
 
-    # 5. Запуск обучения (тест на переобучение)
-    epochs_to_run = DETECTOR_CONFIG.get('train_params', {}).get('epochs_test_overfit', 100)  # Из конфига
-    print(f"\nЗапуск обучения детектора на {epochs_to_run} эпох (тест на переобучение)...")
-    print(f"Логи TensorBoard: {logs_dir_abs}")
-    print(f"Модели будут сохраняться в {weights_dir_abs} с префиксом detector_v1_overfit_test_epoch_")
+    if validation_dataset_detector:
+        checkpoint_filepath_best = os.path.join(WEIGHTS_BASE_DIR_ABS, 'detector_v1_best_val_loss.keras')
+        model_checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(
+            filepath=checkpoint_filepath_best,
+            save_weights_only=False,
+            monitor='val_loss',  # Отслеживаем val_loss
+            mode='min',
+            save_best_only=True)  # Сохраняем только лучшую по val_loss
+        callbacks_list.append(model_checkpoint_callback)
+        print(f"Лучшая модель будет сохраняться в: {checkpoint_filepath_best} (по val_loss)")
+
+        early_stopping_callback = tf.keras.callbacks.EarlyStopping(
+            monitor='val_loss',
+            patience=15,  # Количество эпох без улучшения перед остановкой (увеличил для большего датасета)
+            verbose=1,
+            restore_best_weights=True)
+        callbacks_list.append(early_stopping_callback)
+
+        reduce_lr_callback = tf.keras.callbacks.ReduceLROnPlateau(
+            monitor='val_loss',
+            factor=0.2,  # Уменьшаем LR в 5 раз
+            patience=5,  # После 5 эпох без улучшения val_loss
+            verbose=1,
+            min_lr=1e-7)  # Минимальный LR
+        callbacks_list.append(reduce_lr_callback)
+    else:
+        # Если нет валидации, просто сохраняем модель в конце
+        print(
+            "ПРЕДУПРЕЖДЕНИЕ: Валидационный датасет НЕ доступен. ModelCheckpoint и EarlyStopping по val_loss не будут использованы.")
+        print("                 Будет сохранена только финальная модель после всех эпох.")
+
+    # 5. Запуск обучения
+    print(f"\nЗапуск обучения детектора на {EPOCHS_DET} эпох...")
+    print(f"  Обучающая выборка: {len(train_image_paths)} изображений, Аугментация: {USE_AUGMENTATION_TRAIN}")
+    if val_image_paths:
+        print(f"  Валидационная выборка: {len(val_image_paths)} изображений")
+    print(f"  Batch Size: {BATCH_SIZE_DET}")
+    print(f"  Логи TensorBoard: {log_dir}")
 
     try:
         history = model.fit(
             train_dataset_detector,
-            epochs=epochs_to_run,
+            epochs=EPOCHS_DET,
+            validation_data=validation_dataset_detector,  # Будет None, если val_ds is None
             callbacks=callbacks_list,
             verbose=1
         )
-        print("\n--- Тестовое обучение детектора (v1) завершено ---")
+        print("\n--- Обучение детектора (v1) завершено ---")
 
-        final_model_path = os.path.join(weights_dir_abs, 'detector_v1_overfit_final.keras')
-        model.save(final_model_path)
-        print(f"Финальная модель сохранена в: {final_model_path}")
+        final_model_save_path = os.path.join(WEIGHTS_BASE_DIR_ABS, 'detector_v1_final_after_full_train.keras')
+        model.save(final_model_save_path)
+        print(f"Финальная модель (после всех эпох или EarlyStopping) сохранена в: {final_model_save_path}")
+        if validation_dataset_detector and os.path.exists(checkpoint_filepath_best):
+            print(f"Лучшая модель по val_loss также сохранена в: {checkpoint_filepath_best}")
+
 
     except Exception as e_fit:
         print(f"ОШИБКА во время model.fit() для детектора: {e_fit}")
@@ -244,4 +264,11 @@ def train_detector_main():
 
 
 if __name__ == '__main__':
+    # Перед запуском этого скрипта, убедись, что:
+    # 1. `create_data_splits.py` был запущен и успешно создал папки
+    #    `data/Detector_Dataset_Ready/train/` и `data/Detector_Dataset_Ready/validation/`
+    #    с изображениями и XML аннотациями.
+    # 2. Все конфигурационные файлы (base_config.yaml, detector_config.yaml) настроены правильно.
+    # 3. Модули `src.datasets.detector_data_loader`, `src.models.object_detector`,
+    #    `src.losses.detection_losses` существуют и не содержат ошибок импорта/синтаксиса.
     train_detector_main()

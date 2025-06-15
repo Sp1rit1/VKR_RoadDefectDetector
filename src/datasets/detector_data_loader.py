@@ -194,21 +194,15 @@ def load_and_prepare_detector_y_true_py_func(image_path_tensor, xml_path_tensor,
     image_path = image_path_tensor.numpy().decode('utf-8')
     xml_path = xml_path_tensor.numpy().decode('utf-8')
 
-    # --- ОТЛАДОЧНЫЙ ВЫВОД ЗНАЧЕНИЯ ФЛАГА АУГМЕНТАЦИИ ---
-    # py_apply_augmentation_arg здесь будет numpy.bool_ или tf.Tensor (EagerTensor) в зависимости от версии TF
-    # Нам нужно его преобразовать в чистый Python bool
+
     if hasattr(py_apply_augmentation_arg, 'numpy'):  # Если это EagerTensor
         py_apply_augmentation = bool(py_apply_augmentation_arg.numpy())
     else:  # Если это уже Python bool или numpy.bool_
         py_apply_augmentation = bool(py_apply_augmentation_arg)
-    print(
-        f"  DEBUG_PY_FUNC ({os.path.basename(image_path)}): Входящий py_apply_augmentation_arg={py_apply_augmentation_arg} (тип {type(py_apply_augmentation_arg)}), Преобразованный py_apply_augmentation={py_apply_augmentation}")
-    # --- КОНЕЦ ОТЛАДОЧНОГО ВЫВОДА ---
 
     y_true_output_shape = (py_grid_h, py_grid_w, py_anchors_wh.shape[0], 5 + py_num_classes)
     image_output_shape = (py_target_height, py_target_width, 3)
 
-    # print(f"\nDEBUG_PY_FUNC: Обработка файла: {os.path.basename(image_path)}") # Можно раскомментировать если нужно
 
     try:
         from PIL import Image as PILImage
@@ -236,7 +230,6 @@ def load_and_prepare_detector_y_true_py_func(image_path_tensor, xml_path_tensor,
     current_class_ids = class_ids_list_for_gt_orig
 
     if py_apply_augmentation and AUGMENTATION_FUNC_AVAILABLE and objects:
-        print(f"  DEBUG_PY_FUNC ({os.path.basename(image_path)}): *** Применяю аугментацию! ***")
         try:
             augmenter = get_detector_train_augmentations(py_target_height, py_target_width)
             augmented = augmenter(image=current_image_np,
@@ -340,10 +333,7 @@ def create_detector_tf_dataset(image_paths_list, xml_paths_list, batch_size,
     if len(image_paths_list) != len(xml_paths_list):
         raise ValueError("Количество путей к изображениям и XML должно совпадать.")
 
-    print(f"DEBUG_CREATE_DATASET: Входящий флаг augment = {augment} (тип {type(augment)})")  # <--- Новый print
     augment_flags = tf.constant([augment] * len(image_paths_list), dtype=tf.bool)
-    print(
-        f"DEBUG_CREATE_DATASET: Создан augment_flags (пример первого элемента): {augment_flags[0]} (тип {type(augment_flags[0])})")  # <--- Новый print
 
     dataset = tf.data.Dataset.from_tensor_slices((
         tf.constant(image_paths_list, dtype=tf.string),
@@ -371,6 +361,7 @@ def create_detector_tf_dataset(image_paths_list, xml_paths_list, batch_size,
 # Я скопирую его еще раз для полноты:
 if __name__ == '__main__':
     import sys
+    import random  # Добавим импорт random
 
     _utils_path = os.path.abspath(os.path.join(_current_script_dir, '..', 'utils'))
     if _utils_path not in sys.path:
@@ -389,84 +380,95 @@ if __name__ == '__main__':
     if not CONFIG_LOAD_SUCCESS:
         print("\n!!! ВНИМАНИЕ: Конфигурационные файлы не были загружены корректно.")
 
-    print(f"--- Тестирование detector_data_loader.py (Оригинал + Аугментация) ---")
+    print(f"--- Тестирование detector_data_loader.py (Оригинал + Аугментация из Detector_Dataset_Ready/train/) ---")
     print(f"  Глобальный флаг USE_AUGMENTATION_CFG из конфига: {USE_AUGMENTATION_CFG}")
     print(f"  AUGMENTATION_FUNC_AVAILABLE: {AUGMENTATION_FUNC_AVAILABLE}")
-    # ... (остальной print параметров сетки, якорей, классов) ...
-    _master_dataset_abs_for_test = MASTER_DATASET_PATH_ABS
-    source_subfolder_keys_for_test = [
-        BASE_CONFIG.get('source_defective_road_img_parent_subdir', 'Defective_Road_Images'),
-        BASE_CONFIG.get('source_normal_road_img_parent_subdir', 'Normal_Road_Images'),
-        BASE_CONFIG.get('source_not_road_img_parent_subdir', 'Not_Road_Images')]
-    images_subdir_name_in_master = BASE_CONFIG.get('dataset', {}).get('images_dir', 'JPEGImages')
-    annotations_subdir_name_in_master = BASE_CONFIG.get('dataset', {}).get('annotations_dir', 'Annotations')
+    # ... (остальной print параметров сетки, якорей, классов, они берутся из глобальных переменных модуля) ...
+    print(f"Параметры сетки: GRID_HEIGHT={GRID_HEIGHT}, GRID_WIDTH={GRID_WIDTH}")
+    print(f"Якоря (W_norm, H_norm) используются внутри py_func:\n{ANCHORS_WH_NORMALIZED}")
+    print(f"Количество якорей на ячейку: {NUM_ANCHORS_PER_LOCATION}")
+    print(f"Количество классов: {NUM_CLASSES_DETECTOR} ({CLASSES_LIST_GLOBAL_FOR_DETECTOR})")
 
-    print(f"\nТестовые пути (сканируем Master_Dataset): Корень: {_master_dataset_abs_for_test}")
-    example_image_paths, example_xml_paths = [], []
-    if not os.path.isdir(_master_dataset_abs_for_test):
-        print(f"ОШИБКА: Директория мастер-датасета не найдена.")
+    # --- Пути к разделенному датасету (train) ---
+    _detector_dataset_ready_path_rel = "data/Detector_Dataset_Ready"
+    DETECTOR_DATASET_READY_ABS = os.path.join(_project_root_dir, _detector_dataset_ready_path_rel)
+
+    TRAIN_IMAGES_DIR_FOR_TEST = os.path.join(DETECTOR_DATASET_READY_ABS, "train",
+                                             _images_subdir_name_cfg)  # _images_subdir_name_cfg из глобальных
+    TRAIN_ANNOTATIONS_DIR_FOR_TEST = os.path.join(DETECTOR_DATASET_READY_ABS, "train",
+                                                  _annotations_subdir_name_cfg)  # _annotations_subdir_name_cfg из глобальных
+
+    print(f"\nТестовые пути (сканируем Detector_Dataset_Ready/train/):")
+    print(f"  Изображения из: {TRAIN_IMAGES_DIR_FOR_TEST}")
+    print(f"  Аннотации из: {TRAIN_ANNOTATIONS_DIR_FOR_TEST}")
+
+    example_image_paths = []
+    example_xml_paths = []
+
+    if not os.path.isdir(TRAIN_IMAGES_DIR_FOR_TEST) or not os.path.isdir(TRAIN_ANNOTATIONS_DIR_FOR_TEST):
+        print(f"ОШИБКА: Директории data/Detector_Dataset_Ready/train/ (JPEGImages или Annotations) не найдены.")
+        print("Пожалуйста, убедитесь, что скрипт 'create_data_splits.py' был успешно запущен.")
     else:
-        for category_subdir_name in source_subfolder_keys_for_test:
-            if not category_subdir_name: continue
-            current_images_dir = os.path.join(_master_dataset_abs_for_test, category_subdir_name,
-                                              images_subdir_name_in_master)
-            current_annotations_dir = os.path.join(_master_dataset_abs_for_test, category_subdir_name,
-                                                   annotations_subdir_name_in_master)
-            if not os.path.isdir(current_images_dir) or not os.path.isdir(current_annotations_dir): continue
-            valid_ext = ['.jpg', '.jpeg', '.png'];
-            img_files_cat = []
-            for ext in valid_ext:
-                img_files_cat.extend(glob.glob(os.path.join(current_images_dir, f"*{ext.lower()}")))
-                img_files_cat.extend(glob.glob(os.path.join(current_images_dir, f"*{ext.upper()}")))
-            for img_path in sorted(list(set(img_files_cat))):
-                base, _ = os.path.splitext(os.path.basename(img_path));
-                xml_path = os.path.join(current_annotations_dir, base + ".xml")
-                if os.path.exists(xml_path): example_image_paths.append(img_path); example_xml_paths.append(xml_path)
+        valid_extensions = ['.jpg', '.jpeg', '.png']
+        all_image_files_in_train_dir = []
+        for ext in valid_extensions:
+            all_image_files_in_train_dir.extend(glob.glob(os.path.join(TRAIN_IMAGES_DIR_FOR_TEST, f"*{ext.lower()}")))
+            all_image_files_in_train_dir.extend(glob.glob(os.path.join(TRAIN_IMAGES_DIR_FOR_TEST, f"*{ext.upper()}")))
+
+        all_image_files_in_train_dir = sorted(list(set(all_image_files_in_train_dir)))
+
+        for img_path_abs_str in all_image_files_in_train_dir:
+            base_name, _ = os.path.splitext(os.path.basename(img_path_abs_str))
+            xml_file_abs_str = os.path.join(TRAIN_ANNOTATIONS_DIR_FOR_TEST, base_name + ".xml")
+
+            if os.path.exists(xml_file_abs_str):
+                example_image_paths.append(img_path_abs_str)
+                example_xml_paths.append(xml_file_abs_str)
 
         if not example_image_paths:
-            print("\nНе найдено пар в Master_Dataset.")
+            print("\nНе найдено совпадающих пар изображение/аннотация в data/Detector_Dataset_Ready/train/.")
         else:
-            print(f"\nВсего {len(example_image_paths)} пар в Master_Dataset.")
+            print(
+                f"\nВсего найдено {len(example_image_paths)} пар изображение/аннотация в data/Detector_Dataset_Ready/train/.")
 
-            # --- НОВАЯ ПЕРЕМЕННАЯ: СКОЛЬКО ПРИМЕРОВ ПОКАЗАТЬ ---
-            num_examples_to_visualize = 10
-            # ----------------------------------------------------
+            num_examples_to_visualize = min(len(example_image_paths), 2)  # Показываем 2 случайных примера или меньше
 
-            num_test_files_to_load = min(len(example_image_paths), num_examples_to_visualize)
-
-            if num_test_files_to_load == 0:
+            if num_examples_to_visualize == 0:
                 print("Нет файлов для теста.")
             else:
-                import random
-
-                # random.seed(42) # Закомментируй для случайности, или установи для воспроизводимости конкретных файлов
-
                 paired_files = list(zip(example_image_paths, example_xml_paths))
                 random.shuffle(paired_files)
-                selected_pairs = paired_files[:num_test_files_to_load]
+                selected_pairs = paired_files[:num_examples_to_visualize]
 
                 print(
-                    f"Будет протестировано и визуализировано (оригинал + аугментация) на {len(selected_pairs)} случайных файлах:")
+                    f"Будет протестировано и визуализировано (оригинал + аугментация) на {len(selected_pairs)} случайных файлах из TRAIN выборки:")
                 for p_idx, (p_img_path, p_xml_path) in enumerate(selected_pairs):
                     print(f"  {p_idx + 1}. {os.path.basename(p_img_path)}")
 
-                    current_test_batch_size = 1  # Обрабатываем по одному файлу для наглядности
+                    current_test_batch_size = 1
 
-                    # --- 1. Обработка БЕЗ аугментации ---
+                    # --- 1. Обработка ОРИГИНАЛА ---
                     print(f"\n  --- Обработка ОРИГИНАЛА для: {os.path.basename(p_img_path)} ---")
                     dataset_no_aug = create_detector_tf_dataset(
                         [p_img_path], [p_xml_path],
                         batch_size=current_test_batch_size,
                         shuffle=False,
-                        augment=False  # ЯВНО отключаем аугментацию
+                        augment=False
                     )
                     try:
                         for images_batch, y_true_batch in dataset_no_aug.take(1):
+                            # ... (код вывода форм и информации об ответственных якорях, как в твоей предыдущей версии)
                             print("    Img shape (оригинал):", images_batch.shape, "y_true shape (оригинал):",
                                   y_true_batch.shape)
                             if images_batch.shape[0] > 0:
                                 s_img, s_ytrue = images_batch[0].numpy(), y_true_batch[0].numpy()
-                                # ... (код для вывода информации об ответственных якорях - можно скопировать из предыдущей версии, если нужно) ...
+                                obj_map = s_ytrue[..., 4];
+                                resp_idx = tf.where(obj_map > 0.5)
+                                if tf.size(resp_idx) > 0:
+                                    print(
+                                        f"    {tf.size(resp_idx) // 3} 'ответственных' якорей (Оригинал):")  # Добавил Original
+                                else:
+                                    print("    Не найдено объектов в y_true (Оригинал).")
                                 if VISUALIZATION_ENABLED:
                                     visualize_data_sample(s_img, s_ytrue,
                                                           title=f"GT for {os.path.basename(p_img_path)} (Original)")
@@ -474,13 +476,14 @@ if __name__ == '__main__':
                         print(f"    ОШИБКА при обработке оригинала: {e}")
 
                     # --- 2. Обработка С аугментацией (если включена глобально) ---
+                    # Используем глобальный флаг USE_AUGMENTATION_CFG, который читается из detector_config.yaml
                     if USE_AUGMENTATION_CFG and AUGMENTATION_FUNC_AVAILABLE:
                         print(f"\n  --- Обработка АУГМЕНТИРОВАННОЙ версии для: {os.path.basename(p_img_path)} ---")
                         dataset_with_aug = create_detector_tf_dataset(
                             [p_img_path], [p_xml_path],
                             batch_size=current_test_batch_size,
-                            shuffle=False,  # Shuffle не нужен, так как мы берем тот же самый файл
-                            augment=True  # ЯВНО включаем аугментацию
+                            shuffle=False,
+                            augment=True  # ЯВНО включаем аугментацию для этой ветки
                         )
                         try:
                             for images_batch_aug, y_true_batch_aug in dataset_with_aug.take(1):
@@ -488,7 +491,12 @@ if __name__ == '__main__':
                                       y_true_batch_aug.shape)
                                 if images_batch_aug.shape[0] > 0:
                                     s_img_aug, s_ytrue_aug = images_batch_aug[0].numpy(), y_true_batch_aug[0].numpy()
-                                    # ... (код для вывода информации об ответственных якорях для аугментированной версии) ...
+                                    obj_map_aug = s_ytrue_aug[..., 4];
+                                    resp_idx_aug = tf.where(obj_map_aug > 0.5)
+                                    if tf.size(resp_idx_aug) > 0:
+                                        print(f"    {tf.size(resp_idx_aug) // 3} 'ответственных' якорей (Аугм.):")
+                                    else:
+                                        print("    Не найдено объектов в y_true (Аугм.).")
                                     if VISUALIZATION_ENABLED:
                                         visualize_data_sample(s_img_aug, s_ytrue_aug,
                                                               title=f"GT for {os.path.basename(p_img_path)} (AUGMENTED)")
