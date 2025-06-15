@@ -431,7 +431,7 @@ if __name__ == '__main__':
             print(
                 f"\nВсего найдено {len(example_image_paths)} пар изображение/аннотация в data/Detector_Dataset_Ready/train/.")
 
-            num_examples_to_visualize = min(len(example_image_paths), 2)  # Показываем 2 случайных примера или меньше
+            num_examples_to_visualize = min(len(example_image_paths), 5)  # Показываем 2 случайных примера или меньше
 
             if num_examples_to_visualize == 0:
                 print("Нет файлов для теста.")
