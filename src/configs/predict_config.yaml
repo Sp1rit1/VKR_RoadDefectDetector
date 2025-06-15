@@ -2,6 +2,6 @@
 classifier_model_path: "weights/classifier_trained_model_best.keras"
 detector_model_path: "weights/detector_v1_overfit_final.keras"
 output_path_template: "results/{image_name}_predicted.{ext}" # Можно даже так для авто-имени
-default_conf_thresh: 0.5
-default_iou_thresh: 0.5
+default_conf_thresh: 0.25
+default_iou_thresh: 0.25
 default_max_dets: 100

@@ -1,15 +1,45 @@
-# src/datasets/detector_data_loader.py
+# RoadDefectDetector/src/datasets/detector_data_loader.py
 import tensorflow as tf
 import os
 import xml.etree.ElementTree as ET
 import numpy as np
 import yaml
 import glob
-from functools import partial
+import sys
+from functools import partial  # Может понадобиться, если будем передавать больше аргументов в map
+
+# --- Импорт Аугментаций ---
+try:
+    if __name__ == '__main__' and __package__ is None:  # Если запускаем файл напрямую
+        # Добавляем родительскую директорию src/ в путь, чтобы можно было импортировать src.datasets.augmentations
+        _parent_dir_for_direct_run = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+        if _parent_dir_for_direct_run not in sys.path:
+            sys.path.insert(0, _parent_dir_for_direct_run)
+        from datasets.augmentations import get_detector_train_augmentations
+    else:  # Если импортируется как модуль
+        from .augmentations import get_detector_train_augmentations
+
+    AUGMENTATION_FUNC_AVAILABLE = True
+    print("INFO (detector_data_loader.py): Модуль augmentations.py успешно импортирован.")
+except ImportError as e_imp:
+    print(f"ПРЕДУПРЕЖДЕНИЕ (detector_data_loader.py): Не удалось импортировать augmentations: {e_imp}")
+    print("                                       Аугментация будет отключена.")
+    AUGMENTATION_FUNC_AVAILABLE = False
+
+
+    def get_detector_train_augmentations(h, w):
+        return None  # Заглушка
+except Exception as e_other_imp:
+    print(f"ПРЕДУПРЕЖДЕНИЕ (detector_data_loader.py): Другая ошибка при импорте augmentations: {e_other_imp}")
+    AUGMENTATION_FUNC_AVAILABLE = False
+
+
+    def get_detector_train_augmentations(h, w):
+        return None  # Заглушка
 
 # --- Загрузка Конфигурации ---
-_current_script_dir = os.path.dirname(os.path.abspath(__file__))  # src/datasets/
-_project_root_dir = os.path.abspath(os.path.join(_current_script_dir, '..', '..'))  # Корень проекта
+_current_script_dir = os.path.dirname(os.path.abspath(__file__))
+_project_root_dir = os.path.abspath(os.path.join(_current_script_dir, '..', '..'))
 
 _base_config_path = os.path.join(_project_root_dir, 'src', 'configs', 'base_config.yaml')
 _detector_config_path = os.path.join(_project_root_dir, 'src', 'configs', 'detector_config.yaml')
@@ -19,70 +49,52 @@ DETECTOR_CONFIG = {}
 CONFIG_LOAD_SUCCESS = True
 
 try:
-    # print(f"INFO: Попытка загрузить base_config из: {_base_config_path}")
     with open(_base_config_path, 'r', encoding='utf-8') as f:
         BASE_CONFIG = yaml.safe_load(f)
-    if not isinstance(BASE_CONFIG, dict):
-        # print(f"ПРЕДУПРЕЖДЕНИЕ: base_config.yaml ({_base_config_path}) пуст или имеет неверный формат. Используются частичные дефолты.")
-        BASE_CONFIG = {}
-        CONFIG_LOAD_SUCCESS = False
-    # print(f"INFO: base_config загружен: {bool(BASE_CONFIG)}")
+    if not isinstance(BASE_CONFIG, dict): BASE_CONFIG = {}; CONFIG_LOAD_SUCCESS = False
 except FileNotFoundError:
-    print(
-        f"ПРЕДУПРЕЖДЕНИЕ: Файл base_config.yaml не найден по пути: {_base_config_path}. Используются частичные дефолты.")
-    CONFIG_LOAD_SUCCESS = False
-except yaml.YAMLError as e:
-    print(f"ОШИБКА YAML при чтении base_config.yaml: {e}. Используются частичные дефолты.")
-    CONFIG_LOAD_SUCCESS = False
+    CONFIG_LOAD_SUCCESS = False; print(f"ПРЕДУПРЕЖДЕНИЕ: Файл base_config.yaml не найден: {_base_config_path}.")
+except yaml.YAMLError:
+    CONFIG_LOAD_SUCCESS = False; print(f"ОШИБКА YAML в base_config.yaml.")
 
 try:
-    # print(f"INFO: Попытка загрузить detector_config из: {_detector_config_path}")
     with open(_detector_config_path, 'r', encoding='utf-8') as f:
         DETECTOR_CONFIG = yaml.safe_load(f)
-    if not isinstance(DETECTOR_CONFIG, dict):
-        # print(f"ПРЕДУПРЕЖДЕНИЕ: detector_config.yaml ({_detector_config_path}) пуст или имеет неверный формат. Используются частичные дефолты.")
-        DETECTOR_CONFIG = {}
-        CONFIG_LOAD_SUCCESS = False
-    # print(f"INFO: detector_config загружен: {bool(DETECTOR_CONFIG)}")
+    if not isinstance(DETECTOR_CONFIG, dict): DETECTOR_CONFIG = {}; CONFIG_LOAD_SUCCESS = False
 except FileNotFoundError:
-    print(
-        f"ПРЕДУПРЕЖДЕНИЕ: Файл detector_config.yaml не найден по пути: {_detector_config_path}. Используются частичные дефолты.")
-    CONFIG_LOAD_SUCCESS = False
-except yaml.YAMLError as e:
-    print(f"ОШИБКА YAML при чтении detector_config.yaml: {e}. Используются частичные дефолты.")
-    CONFIG_LOAD_SUCCESS = False
+    CONFIG_LOAD_SUCCESS = False; print(f"ПРЕДУПРЕЖДЕНИЕ: Файл detector_config.yaml не найден: {_detector_config_path}.")
+except yaml.YAMLError:
+    CONFIG_LOAD_SUCCESS = False; print(f"ОШИБКА YAML в detector_config.yaml.")
 
-# --- Параметры из Конфигов с дефолтами ---
+if not CONFIG_LOAD_SUCCESS:
+    print("ПРЕДУПРЕЖДЕНИЕ: Ошибка загрузки конфигов. Используются дефолты в detector_data_loader.")
+    DETECTOR_CONFIG.setdefault('input_shape', [416, 416, 3])
+    DETECTOR_CONFIG.setdefault('classes', ['pit', 'crack'])  # Используй 'crack' если это твой класс
+    DETECTOR_CONFIG.setdefault('num_anchors_per_location', 3)
+    DETECTOR_CONFIG.setdefault('anchors_wh_normalized', [[0.05, 0.1], [0.1, 0.05], [0.1, 0.1]])
+    DETECTOR_CONFIG.setdefault('use_augmentation', False)
+    BASE_CONFIG.setdefault('dataset', {'images_dir': 'JPEGImages', 'annotations_dir': 'Annotations'})
+    BASE_CONFIG.setdefault('master_dataset_path', 'data/Master_Dataset_Fallback')
+
 _input_shape_list = DETECTOR_CONFIG.get('input_shape', [416, 416, 3])
 TARGET_IMG_HEIGHT = _input_shape_list[0]
 TARGET_IMG_WIDTH = _input_shape_list[1]
-
-CLASSES_LIST_GLOBAL_FOR_DETECTOR = DETECTOR_CONFIG.get('classes', ['pit',
-                                                                   'treshina'])  # Убедись, что это ['pit', 'crack'] если ты изменил имя
-NUM_CLASSES_DETECTOR = DETECTOR_CONFIG.get('num_classes', len(CLASSES_LIST_GLOBAL_FOR_DETECTOR))
-if NUM_CLASSES_DETECTOR != len(CLASSES_LIST_GLOBAL_FOR_DETECTOR):
-    NUM_CLASSES_DETECTOR = len(CLASSES_LIST_GLOBAL_FOR_DETECTOR)
-
-BATCH_SIZE_FROM_CONFIG = DETECTOR_CONFIG.get('train_params', {}).get('batch_size', 1)
-
+CLASSES_LIST_GLOBAL_FOR_DETECTOR = DETECTOR_CONFIG.get('classes', ['pit', 'crack'])
+NUM_CLASSES_DETECTOR = len(CLASSES_LIST_GLOBAL_FOR_DETECTOR)
+# BATCH_SIZE_FROM_CONFIG = DETECTOR_CONFIG.get('train_params', {}).get('batch_size', 1) # Не используется в этом файле напрямую
 NETWORK_STRIDE = 16
 GRID_HEIGHT = TARGET_IMG_HEIGHT // NETWORK_STRIDE
 GRID_WIDTH = TARGET_IMG_WIDTH // NETWORK_STRIDE
-
 ANCHORS_WH_NORMALIZED_LIST = DETECTOR_CONFIG.get('anchors_wh_normalized', [[0.05, 0.1], [0.1, 0.05], [0.1, 0.1]])
 ANCHORS_WH_NORMALIZED = np.array(ANCHORS_WH_NORMALIZED_LIST, dtype=np.float32)
 NUM_ANCHORS_PER_LOCATION = ANCHORS_WH_NORMALIZED.shape[0]
-config_num_anchors = DETECTOR_CONFIG.get('num_anchors_per_location')
-if config_num_anchors is not None and config_num_anchors != NUM_ANCHORS_PER_LOCATION:
-    print(
-        f"ПРЕДУПРЕЖДЕНИЕ: num_anchors_per_location ({config_num_anchors}) не совпадает с anchors_wh_normalized ({NUM_ANCHORS_PER_LOCATION}).")
-
+USE_AUGMENTATION_CFG = DETECTOR_CONFIG.get('use_augmentation',
+                                           False) and AUGMENTATION_FUNC_AVAILABLE  # Учитываем доступность функции
 _master_dataset_path_from_cfg = BASE_CONFIG.get('master_dataset_path', 'data/Master_Dataset_Fallback')
 if not os.path.isabs(_master_dataset_path_from_cfg):
     MASTER_DATASET_PATH_ABS = os.path.join(_project_root_dir, _master_dataset_path_from_cfg)
 else:
     MASTER_DATASET_PATH_ABS = _master_dataset_path_from_cfg
-
 _images_subdir_name_cfg = BASE_CONFIG.get('dataset', {}).get('images_dir', 'JPEGImages')
 _annotations_subdir_name_cfg = BASE_CONFIG.get('dataset', {}).get('annotations_dir', 'Annotations')
 
@@ -90,94 +102,58 @@ _annotations_subdir_name_cfg = BASE_CONFIG.get('dataset', {}).get('annotations_d
 # --- Конец Загрузки Конфигурации ---
 
 
-def parse_xml_annotation(xml_file_path, classes_list):  # <--- ИЗМЕНЕНИЕ ЗДЕСЬ
-    """Парсит PASCAL VOC XML файл и возвращает список объектов и размеры изображения."""
+# --- Функции parse_xml_annotation, preprocess_image_and_boxes, calculate_iou_numpy ---
+# (Вставь сюда свои последние рабочие версии этих функций.
+#  Я оставлю здесь те, что мы отладили)
+def parse_xml_annotation(xml_file_path, classes_list):
     try:
         tree = ET.parse(xml_file_path)
         root = tree.getroot()
-
         image_filename_node = root.find('filename')
-        # Используем имя самого XML файла для формирования имени изображения, если тег filename отсутствует или некорректен
         image_filename = image_filename_node.text if image_filename_node is not None and image_filename_node.text else os.path.basename(
-            xml_file_path).replace(".xml", ".jpg")  # Запасной вариант
-
+            xml_file_path).replace(".xml", ".jpg")
         size_node = root.find('size')
-        img_width_xml, img_height_xml = None, None  # Инициализируем
+        img_width_xml, img_height_xml = None, None
         if size_node is not None:
-            width_node = size_node.find('width')
-            height_node = size_node.find('height')
-            if width_node is not None and height_node is not None and width_node.text is not None and height_node.text is not None:
-                try:  # Добавим try-except для преобразования в int
-                    img_width_xml = int(width_node.text)
-                    img_height_xml = int(height_node.text)
-                    if img_width_xml <= 0 or img_height_xml <= 0:  # Проверка на валидность
-                        # print(f"DEBUG_PARSE_XML: Невалидные размеры в XML {os.path.basename(xml_file_path)}: w={width_node.text}, h={height_node.text}. Размеры будут None.")
-                        img_width_xml, img_height_xml = None, None
+            width_node, height_node = size_node.find('width'), size_node.find('height')
+            if width_node is not None and height_node is not None and width_node.text and height_node.text:
+                try:
+                    img_width_xml, img_height_xml = int(width_node.text), int(height_node.text)
+                    if img_width_xml <= 0 or img_height_xml <= 0: img_width_xml, img_height_xml = None, None
                 except ValueError:
-                    # print(f"DEBUG_PARSE_XML: Не удалось преобразовать размеры в int в XML {os.path.basename(xml_file_path)}: w='{width_node.text}', h='{height_node.text}'. Размеры будут None.")
                     img_width_xml, img_height_xml = None, None
-        # else:
-        # print(f"DEBUG_PARSE_XML: Тег <size> не найден в {os.path.basename(xml_file_path)}. Размеры будут None.")
-
         objects = []
         for obj_node in root.findall('object'):
             class_name_node = obj_node.find('name')
-            if class_name_node is None or class_name_node.text is None:  # Проверка на существование тега и текста
-                # print(f"DEBUG_PARSE_XML: Пропущен объект без имени в {os.path.basename(xml_file_path)}")
-                continue
+            if class_name_node is None or class_name_node.text is None: continue
             class_name = class_name_node.text
-
-            if class_name not in classes_list:  # Используем переданный classes_list
-                # print(f"DEBUG_PARSE_XML: Неизвестный класс '{class_name}' в {os.path.basename(xml_file_path)}. Пропускаем объект. Ожидаемые классы: {classes_list}")
-                continue
+            if class_name not in classes_list: continue
             class_id = classes_list.index(class_name)
-
             bndbox_node = obj_node.find('bndbox')
-            if bndbox_node is None:  # Проверка на существование bndbox
-                # print(f"DEBUG_PARSE_XML: Пропущен объект '{class_name}' без bndbox в {os.path.basename(xml_file_path)}")
-                continue
-
-            # Более безопасное извлечение координат
+            if bndbox_node is None: continue
             try:
-                xmin = float(bndbox_node.find('xmin').text)
-                ymin = float(bndbox_node.find('ymin').text)
-                xmax = float(bndbox_node.find('xmax').text)
-                ymax = float(bndbox_node.find('ymax').text)
-            except (ValueError, AttributeError, TypeError) as e_coord:  # AttributeError/TypeError если find вернул None
-                # print(f"DEBUG_PARSE_XML: Ошибка координат для объекта '{class_name}' в {os.path.basename(xml_file_path)}: {e_coord}. Пропускаем объект.")
+                xmin, ymin, xmax, ymax = (float(bndbox_node.find(tag).text) for tag in ['xmin', 'ymin', 'xmax', 'ymax'])
+            except (ValueError, AttributeError, TypeError):
                 continue
-
-            if xmin >= xmax or ymin >= ymax:
-                # print(f"DEBUG_PARSE_XML: Некорректные координаты bbox (xmin>=xmax or ymin>=ymax) в {os.path.basename(xml_file_path)} для {class_name}. Пропускаем объект.")
-                continue
-
-            # Клиппинг по размерам изображения, если они известны из XML
-            if img_width_xml and img_height_xml:
-                xmin = max(0, min(xmin, img_width_xml))
-                ymin = max(0, min(ymin, img_height_xml))
-                xmax = max(0, min(xmax, img_width_xml))
-                ymax = max(0, min(ymax, img_height_xml))
-                # Повторная проверка после клиппинга, так как клиппинг мог сделать их некорректными
-                if xmin >= xmax or ymin >= ymax:
-                    # print(f"DEBUG_PARSE_XML: Координаты bbox стали некорректными после клиппинга в {os.path.basename(xml_file_path)} для {class_name}. Пропускаем объект.")
-                    continue
-
-            objects.append({
-                "class_id": class_id,
-                "class_name": class_name,
-                "xmin": xmin, "ymin": ymin, "xmax": xmax, "ymax": ymax
-            })
+            if xmin >= xmax or ymin >= ymax: continue
+            if img_width_xml and img_height_xml:  # Клиппинг
+                xmin, ymin, xmax, ymax = max(0, min(xmin, img_width_xml)), max(0, min(ymin, img_height_xml)), max(0,
+                                                                                                                  min(xmax,
+                                                                                                                      img_width_xml)), max(
+                    0, min(ymax, img_height_xml))
+                if xmin >= xmax or ymin >= ymax: continue  # Проверка после клиппинга
+            objects.append({"class_id": class_id, "class_name": class_name, "xmin": xmin, "ymin": ymin, "xmax": xmax,
+                            "ymax": ymax})
         return objects, img_width_xml, img_height_xml, image_filename
-    except ET.ParseError as e_parse:  # Ошибка парсинга самого XML файла
-        print(f"ERROR_PARSE_XML: Ошибка парсинга XML файла {os.path.basename(xml_file_path)}: {e_parse}")
-    except Exception as e_generic:  # Другие непредвиденные ошибки
-        print(f"ERROR_PARSE_XML: Непредвиденная ошибка при парсинге {os.path.basename(xml_file_path)}: {e_generic}")
-    return None, None, None, None  # Возвращаем None в случае любой ошибки
+    except ET.ParseError as e_parse:
+        print(f"XML_PARSE_ERROR: {os.path.basename(xml_file_path)}: {e_parse}")
+    except Exception as e_generic:
+        print(f"XML_OTHER_ERROR: {os.path.basename(xml_file_path)}: {e_generic}")
+    return None, None, None, None
 
 
 @tf.function
 def preprocess_image_and_boxes(image, boxes, target_height_tf, target_width_tf):
-    # КОД preprocess_image_and_boxes ИЗ ПРЕДЫДУЩЕГО ОТВЕТА
     original_height_f = tf.cast(tf.shape(image)[0], dtype=tf.float32)
     original_width_f = tf.cast(tf.shape(image)[1], dtype=tf.float32)
     image_resized = tf.image.resize(image, [target_height_tf, target_width_tf])
@@ -197,82 +173,87 @@ def preprocess_image_and_boxes(image, boxes, target_height_tf, target_width_tf):
 
 
 def calculate_iou_numpy(box_wh, anchors_wh):
-    # КОД calculate_iou_numpy ИЗ ПРЕДЫДУЩЕГО ОТВЕТА
-    box_wh = np.array(box_wh)
+    box_wh = np.array(box_wh);
     anchors_wh = np.array(anchors_wh)
-    inter_w = np.minimum(box_wh[0], anchors_wh[:, 0])
+    inter_w = np.minimum(box_wh[0], anchors_wh[:, 0]);
     inter_h = np.minimum(box_wh[1], anchors_wh[:, 1])
-    intersection_area = inter_w * inter_h
-    box_area = box_wh[0] * box_wh[1]
-    anchors_area = anchors_wh[:, 0] * anchors_wh[:, 1]
-    union_area = box_area + anchors_area - intersection_area
-    iou = intersection_area / (union_area + 1e-6)
-    return iou
+    intersection = inter_w * inter_h
+    box_area = box_wh[0] * box_wh[1];
+    anchor_area = anchors_wh[:, 0] * anchors_wh[:, 1]
+    union = box_area + anchor_area - intersection
+    return intersection / (union + 1e-6)
 
+
+# -------------------------------------------------------------------------------------
 
 def load_and_prepare_detector_y_true_py_func(image_path_tensor, xml_path_tensor,
                                              py_target_height, py_target_width,
                                              py_grid_h, py_grid_w,
-                                             py_anchors_wh, py_num_classes):  # py_anchors_wh это ANCHORS_WH_NORMALIZED
-    """
-    Python функция, которую будем оборачивать в tf.py_function.
-    Принимает пути в виде байтовых строк.
-    Формирует y_true для обучения детектора.
-    """
+                                             py_anchors_wh, py_num_classes,
+                                             py_apply_augmentation_arg):  # Изменено имя аргумента
     image_path = image_path_tensor.numpy().decode('utf-8')
     xml_path = xml_path_tensor.numpy().decode('utf-8')
+
+    # --- ОТЛАДОЧНЫЙ ВЫВОД ЗНАЧЕНИЯ ФЛАГА АУГМЕНТАЦИИ ---
+    # py_apply_augmentation_arg здесь будет numpy.bool_ или tf.Tensor (EagerTensor) в зависимости от версии TF
+    # Нам нужно его преобразовать в чистый Python bool
+    if hasattr(py_apply_augmentation_arg, 'numpy'):  # Если это EagerTensor
+        py_apply_augmentation = bool(py_apply_augmentation_arg.numpy())
+    else:  # Если это уже Python bool или numpy.bool_
+        py_apply_augmentation = bool(py_apply_augmentation_arg)
+    print(
+        f"  DEBUG_PY_FUNC ({os.path.basename(image_path)}): Входящий py_apply_augmentation_arg={py_apply_augmentation_arg} (тип {type(py_apply_augmentation_arg)}), Преобразованный py_apply_augmentation={py_apply_augmentation}")
+    # --- КОНЕЦ ОТЛАДОЧНОГО ВЫВОДА ---
 
     y_true_output_shape = (py_grid_h, py_grid_w, py_anchors_wh.shape[0], 5 + py_num_classes)
     image_output_shape = (py_target_height, py_target_width, 3)
 
-    # --- ОТЛАДОЧНЫЙ ВЫВОД: Начало обработки файла ---
-    print(f"\nDEBUG_PY_FUNC: Обработка файла: {os.path.basename(image_path)}")
-    print(f"  XML путь: {os.path.basename(xml_path)}")
-    print(f"  Целевые размеры изображения (H,W): ({py_target_height}, {py_target_width})")
-    print(f"  Размеры сетки (H,W): ({py_grid_h}, {py_grid_w})")
-    print(f"  Количество якорей на ячейку: {py_anchors_wh.shape[0]}")
-    print(f"  Размеры якорей (W_norm, H_norm):\n{py_anchors_wh}")
-    print(f"  Количество классов: {py_num_classes}")
-    # --- КОНЕЦ ОТЛАДОЧНОГО ВЫВОДА ---
+    # print(f"\nDEBUG_PY_FUNC: Обработка файла: {os.path.basename(image_path)}") # Можно раскомментировать если нужно
 
     try:
         from PIL import Image as PILImage
         pil_image = PILImage.open(image_path).convert('RGB')
-        image_np_original = np.array(pil_image, dtype=np.float32)
+        image_np_original_uint8 = np.array(pil_image, dtype=np.uint8)
     except Exception as e_img_load:
-        print(f"DEBUG_PY_FUNC ERROR: Не удалось загрузить изображение {image_path}: {e_img_load}")
         return np.zeros(image_output_shape, dtype=np.float32), \
             np.zeros(y_true_output_shape, dtype=np.float32)
 
-    objects, xml_img_width_parsed, xml_img_height_parsed, _ = parse_xml_annotation(xml_path,
-                                                                                   CLASSES_LIST_GLOBAL_FOR_DETECTOR)
+    objects, _, _, _ = parse_xml_annotation(xml_path, CLASSES_LIST_GLOBAL_FOR_DETECTOR)
 
     if objects is None:
-        print(
-            f"DEBUG_PY_FUNC INFO: Ошибка парсинга XML {xml_path} или объекты не найдены (возвращено None из parse_xml_annotation).")
         return np.zeros(image_output_shape, dtype=np.float32), \
             np.zeros(y_true_output_shape, dtype=np.float32)
 
-    # --- ОТЛАДОЧНЫЙ ВЫВОД: Объекты из XML ---
-    if objects:
-        print(f"  DEBUG_PY_FUNC: Найдено {len(objects)} объектов в XML:")
-        for i_obj, obj_data in enumerate(objects):
-            print(f"    Объект {i_obj}: Класс='{obj_data['class_name']}' (ID={obj_data['class_id']}), "
-                  f"Box_pixels=[{obj_data['xmin']:.0f}, {obj_data['ymin']:.0f}, {obj_data['xmax']:.0f}, {obj_data['ymax']:.0f}]")
-    else:
-        print(f"  DEBUG_PY_FUNC: В XML {os.path.basename(xml_path)} не найдено объектов. Формируется пустой y_true.")
-    # --- КОНЕЦ ОТЛАДОЧНОГО ВЫВОДА ---
-
-    boxes_list_pixels = []
-    class_ids_list_for_gt = []
+    boxes_list_pixels_orig = []
+    class_ids_list_for_gt_orig = []
     if objects:
         for obj in objects:
-            boxes_list_pixels.append([obj['xmin'], obj['ymin'], obj['xmax'], obj['ymax']])
-            class_ids_list_for_gt.append(obj['class_id'])
+            boxes_list_pixels_orig.append([obj['xmin'], obj['ymin'], obj['xmax'], obj['ymax']])
+            class_ids_list_for_gt_orig.append(obj['class_id'])
 
-    image_tensor_in_py = tf.convert_to_tensor(image_np_original, dtype=tf.float32)
-    boxes_tensor_pixels_in_py = tf.constant(boxes_list_pixels, dtype=tf.float32) if objects else tf.zeros((0, 4),
-                                                                                                          dtype=tf.float32)
+    current_image_np = image_np_original_uint8
+    current_boxes_pixels = boxes_list_pixels_orig
+    current_class_ids = class_ids_list_for_gt_orig
+
+    if py_apply_augmentation and AUGMENTATION_FUNC_AVAILABLE and objects:
+        print(f"  DEBUG_PY_FUNC ({os.path.basename(image_path)}): *** Применяю аугментацию! ***")
+        try:
+            augmenter = get_detector_train_augmentations(py_target_height, py_target_width)
+            augmented = augmenter(image=current_image_np,
+                                  bboxes=current_boxes_pixels,
+                                  class_labels_for_albumentations=current_class_ids)
+            current_image_np = augmented['image']
+            current_boxes_pixels = augmented['bboxes']
+            current_class_ids = augmented['class_labels_for_albumentations']
+            if not current_boxes_pixels: objects = []
+        except Exception as e_aug:
+            print(
+                f"DEBUG_PY_FUNC WARNING: Ошибка аугментации для {image_path}: {e_aug}. Используется оригинальное изображение.")
+
+    image_tensor_in_py = tf.convert_to_tensor(current_image_np.astype(np.float32), dtype=tf.float32)
+    boxes_tensor_pixels_in_py = tf.constant(current_boxes_pixels,
+                                            dtype=tf.float32) if current_boxes_pixels else tf.zeros((0, 4),
+                                                                                                    dtype=tf.float32)
 
     image_processed_tensor, scaled_gt_boxes_norm_tensor = preprocess_image_and_boxes(
         image_tensor_in_py, boxes_tensor_pixels_in_py,
@@ -280,146 +261,115 @@ def load_and_prepare_detector_y_true_py_func(image_path_tensor, xml_path_tensor,
         tf.constant(py_target_width, dtype=tf.int32)
     )
 
-    # --- ОТЛАДОЧНЫЙ ВЫВОД: Нормализованные GT боксы ---
-    if tf.shape(scaled_gt_boxes_norm_tensor)[0] > 0:
-        print(
-            f"  DEBUG_PY_FUNC: Нормализованные GT боксы (xmin,ymin,xmax,ymax) после preprocess_image_and_boxes:\n{scaled_gt_boxes_norm_tensor.numpy()}")
-    # --- КОНЕЦ ОТЛАДОЧНОГО ВЫВОДА ---
-
     y_true_target_np = np.zeros(y_true_output_shape, dtype=np.float32)
 
-    if objects and tf.shape(scaled_gt_boxes_norm_tensor)[0] > 0:
+    if objects and tf.shape(scaled_gt_boxes_norm_tensor)[
+        0] > 0:  # Используем objects, а не current_boxes_pixels, так как objects обнуляется если боксы удалены
         gt_boxes_xywh_norm_list = []
-        for i in range(scaled_gt_boxes_norm_tensor.shape[0]):
-            box_norm_np = scaled_gt_boxes_norm_tensor[i].numpy()
-            width_n = float(box_norm_np[2]) - float(box_norm_np[0])
-            height_n = float(box_norm_np[3]) - float(box_norm_np[1])
-            x_center_n = float(box_norm_np[0]) + width_n / 2.0
-            y_center_n = float(box_norm_np[1]) + height_n / 2.0
+        # ... (остальная логика формирования gt_boxes_xywh_norm_list как была) ...
+        for i_s in range(scaled_gt_boxes_norm_tensor.shape[0]):
+            box_norm_np = scaled_gt_boxes_norm_tensor[i_s].numpy();
+            width_n = float(box_norm_np[2]) - float(box_norm_np[0]);
+            height_n = float(box_norm_np[3]) - float(box_norm_np[1]);
+            x_center_n = float(box_norm_np[0]) + width_n / 2.0;
+            y_center_n = float(box_norm_np[1]) + height_n / 2.0;
             gt_boxes_xywh_norm_list.append([x_center_n, y_center_n, width_n, height_n])
 
         gt_boxes_xywh_norm_np = np.array(gt_boxes_xywh_norm_list, dtype=np.float32)
-
-        # --- ОТЛАДОЧНЫЙ ВЫВОД: GT боксы в формате XYWH_norm ---
-        print(
-            f"  DEBUG_PY_FUNC: GT боксы (xc_n, yc_n, w_n, h_n) для сопоставления с якорями:\n{np.round(gt_boxes_xywh_norm_np, 3)}")
-        # --- КОНЕЦ ОТЛАДОЧНОГО ВЫВОДА ---
-
         anchor_assigned_mask = np.zeros((py_grid_h, py_grid_w, py_anchors_wh.shape[0]), dtype=bool)
 
-        for i in range(gt_boxes_xywh_norm_np.shape[0]):
-            gt_xc_n, gt_yc_n, gt_w_n, gt_h_n = gt_boxes_xywh_norm_np[i]
-            gt_class_id = int(class_ids_list_for_gt[i])
-
-            # --- ОТЛАДОЧНЫЙ ВЫВОД: Обработка GT объекта ---
-            print(
-                f"    DEBUG_PY_FUNC: Обработка GT объекта {i}: Класс ID={gt_class_id} ({CLASSES_LIST_GLOBAL_FOR_DETECTOR[gt_class_id]}), XYWH_norm=[{gt_xc_n:.3f}, {gt_yc_n:.3f}, {gt_w_n:.3f}, {gt_h_n:.3f}]")
-            # --- КОНЕЦ ОТЛАДОЧНОГО ВЫВОДА ---
-
-            grid_x_center_float = gt_xc_n * float(py_grid_w)
+        for i_obj_loop in range(gt_boxes_xywh_norm_np.shape[0]):
+            if i_obj_loop >= len(current_class_ids): continue
+            gt_xc_n, gt_yc_n, gt_w_n, gt_h_n = gt_boxes_xywh_norm_np[i_obj_loop]
+            gt_class_id = int(current_class_ids[i_obj_loop])
+            # ... (остальная логика назначения якорей и заполнения y_true_target_np как была) ...
+            grid_x_center_float = gt_xc_n * float(py_grid_w);
             grid_y_center_float = gt_yc_n * float(py_grid_h)
-            grid_x_idx = int(grid_x_center_float)
+            grid_x_idx = int(grid_x_center_float);
             grid_y_idx = int(grid_y_center_float)
-
-            grid_x_idx = min(grid_x_idx, py_grid_w - 1)
+            grid_x_idx = min(grid_x_idx, py_grid_w - 1);
             grid_y_idx = min(grid_y_idx, py_grid_h - 1)
-
-            # --- ОТЛАДОЧНЫЙ ВЫВОД: Ячейка сетки ---
-            print(
-                f"      Центр объекта в сетке (float): ({grid_x_center_float:.2f}, {grid_y_center_float:.2f}) -> Ячейка_idx ({grid_y_idx}, {grid_x_idx})")
-            # --- КОНЕЦ ОТЛАДОЧНОГО ВЫВОДА ---
-
-            best_iou = -1.0  # Инициализируем float
+            best_iou = -1.0;
             best_anchor_idx = -1
             gt_box_shape_wh_for_iou = [gt_w_n, gt_h_n]
-
             ious = calculate_iou_numpy(gt_box_shape_wh_for_iou, py_anchors_wh)
-            best_anchor_idx = int(np.argmax(ious))
+            best_anchor_idx = int(np.argmax(ious));
             best_iou = float(ious[best_anchor_idx])
-
-            # --- ОТЛАДОЧНЫЙ ВЫВОД: Выбор якоря ---
-            print(
-                f"      IoUs с якорями (по формам W,H): {np.round(ious, 3)}, Лучший якорь_idx: {best_anchor_idx}, Best IoU: {best_iou:.3f}")
-            # --- КОНЕЦ ОТЛАДОЧНОГО ВЫВОДА ---
-
-            if best_iou >= 0.0 and not anchor_assigned_mask[
-                grid_y_idx, grid_x_idx, best_anchor_idx]:  # Порог IoU можно будет добавить позже (> 0 это заглушка)
+            if best_iou >= 0.0 and not anchor_assigned_mask[grid_y_idx, grid_x_idx, best_anchor_idx]:
                 anchor_assigned_mask[grid_y_idx, grid_x_idx, best_anchor_idx] = True
-
                 y_true_target_np[grid_y_idx, grid_x_idx, best_anchor_idx, 4] = 1.0
-
-                tx = grid_x_center_float - float(grid_x_idx)
+                tx = grid_x_center_float - float(grid_x_idx);
                 ty = grid_y_center_float - float(grid_y_idx)
-
-                anchor_w_norm_val = float(py_anchors_wh[best_anchor_idx, 0])
+                anchor_w_norm_val = float(py_anchors_wh[best_anchor_idx, 0]);
                 anchor_h_norm_val = float(py_anchors_wh[best_anchor_idx, 1])
-
-                safe_gt_w_n = max(gt_w_n, 1e-9)
+                safe_gt_w_n = max(gt_w_n, 1e-9);
                 safe_gt_h_n = max(gt_h_n, 1e-9)
-                safe_anchor_w = max(anchor_w_norm_val, 1e-9)
+                safe_anchor_w = max(anchor_w_norm_val, 1e-9);
                 safe_anchor_h = max(anchor_h_norm_val, 1e-9)
-
-                tw = np.log(safe_gt_w_n / safe_anchor_w)
+                tw = np.log(safe_gt_w_n / safe_anchor_w);
                 th = np.log(safe_gt_h_n / safe_anchor_h)
-
                 y_true_target_np[grid_y_idx, grid_x_idx, best_anchor_idx, 0:4] = [tx, ty, tw, th]
                 y_true_target_np[grid_y_idx, grid_x_idx, best_anchor_idx, 5 + gt_class_id] = 1.0
-
-                # --- ОТЛАДОЧНЫЙ ВЫВОД: Назначение якоря ---
-                print(
-                    f"      --> НАЗНАЧЕН Якорь_idx {best_anchor_idx} в ячейке ({grid_y_idx},{grid_x_idx}) для GT объекта {i}")
-                print(f"          tx={tx:.2f}, ty={ty:.2f}, tw={tw:.2f}, th={th:.2f}")
-                print(f"          Objectness=1.0, ClassID={gt_class_id} (one-hot index {5 + gt_class_id} = 1.0)")
-                # --- КОНЕЦ ОТЛАДОЧНОГО ВЫВОДА ---
-            else:
-                # --- ОТЛАДОЧНЫЙ ВЫВОД: Якорь не назначен ---
-                print(
-                    f"      --> Якорь_idx {best_anchor_idx} в ячейке ({grid_y_idx},{grid_x_idx}) НЕ назначен для GT объекта {i} (уже занят или IoU={best_iou:.3f} недостаточно).")
-                # --- КОНЕЦ ОТЛАДОЧНОГО ВЫВОДА ---
 
     return image_processed_tensor.numpy(), y_true_target_np
 
 
-def load_and_prepare_detector_y_true_tf_wrapper(image_path_tensor, xml_path_tensor):
-    # КОД load_and_prepare_detector_y_true_tf_wrapper ИЗ ПРЕДЫДУЩЕГО ОТВЕТА
-    # (с передачей TARGET_IMG_HEIGHT, TARGET_IMG_WIDTH, GRID_HEIGHT, GRID_WIDTH, ANCHORS_WH_NORMALIZED, NUM_CLASSES_DETECTOR в inp)
+def load_and_prepare_detector_y_true_tf_wrapper(image_path_tensor, xml_path_tensor, augment_tensor):
     img_processed_np, y_true_np = tf.py_function(
         func=load_and_prepare_detector_y_true_py_func,
         inp=[image_path_tensor, xml_path_tensor,
              TARGET_IMG_HEIGHT, TARGET_IMG_WIDTH,
              GRID_HEIGHT, GRID_WIDTH,
-             ANCHORS_WH_NORMALIZED, NUM_CLASSES_DETECTOR],
+             ANCHORS_WH_NORMALIZED,
+             NUM_CLASSES_DETECTOR,
+             augment_tensor],  # <--- Передаем флаг аугментации
         Tout=[tf.float32, tf.float32]
     )
+
     img_processed_np.set_shape([TARGET_IMG_HEIGHT, TARGET_IMG_WIDTH, 3])
     y_true_output_shape_tf = (GRID_HEIGHT, GRID_WIDTH, NUM_ANCHORS_PER_LOCATION, 5 + NUM_CLASSES_DETECTOR)
     y_true_np.set_shape(y_true_output_shape_tf)
+
     return img_processed_np, y_true_np
 
 
-def create_detector_tf_dataset(image_paths_list, xml_paths_list, batch_size, shuffle=True):
-    # КОД create_detector_tf_dataset ИЗ ПРЕДЫДУЩЕГО ОТВЕТА
+def create_detector_tf_dataset(image_paths_list, xml_paths_list, batch_size,
+                               shuffle=True, augment=False):
     if not isinstance(image_paths_list, (list, tuple)) or not isinstance(xml_paths_list, (list, tuple)):
         raise ValueError("image_paths_list и xml_paths_list должны быть Python списками или кортежами.")
     if len(image_paths_list) != len(xml_paths_list):
         raise ValueError("Количество путей к изображениям и XML должно совпадать.")
+
+    print(f"DEBUG_CREATE_DATASET: Входящий флаг augment = {augment} (тип {type(augment)})")  # <--- Новый print
+    augment_flags = tf.constant([augment] * len(image_paths_list), dtype=tf.bool)
+    print(
+        f"DEBUG_CREATE_DATASET: Создан augment_flags (пример первого элемента): {augment_flags[0]} (тип {type(augment_flags[0])})")  # <--- Новый print
+
     dataset = tf.data.Dataset.from_tensor_slices((
         tf.constant(image_paths_list, dtype=tf.string),
-        tf.constant(xml_paths_list, dtype=tf.string)
+        tf.constant(xml_paths_list, dtype=tf.string),
+        augment_flags
     ))
+
     if shuffle:
         dataset = dataset.shuffle(buffer_size=len(image_paths_list), reshuffle_each_iteration=True)
+
     dataset = dataset.map(
-        load_and_prepare_detector_y_true_tf_wrapper,
+        lambda img_p, xml_p, aug_f: load_and_prepare_detector_y_true_tf_wrapper(img_p, xml_p, aug_f),
         num_parallel_calls=tf.data.AUTOTUNE
     )
+
     dataset = dataset.batch(batch_size, drop_remainder=False)
     dataset = dataset.prefetch(buffer_size=tf.data.AUTOTUNE)
     return dataset
 
 
+# --- Блок if __name__ == '__main__': ---
+# (Остается таким же, как в твоей последней рабочей версии.
+#  Убедись, что он вызывает create_detector_tf_dataset с новым аргументом `augment`,
+#  например, `augment=USE_AUGMENTATION_CFG` или `augment=True` для теста.)
+# Я скопирую его еще раз для полноты:
 if __name__ == '__main__':
-    # Импортируем функцию визуализации из нашего нового модуля
     import sys
 
     _utils_path = os.path.abspath(os.path.join(_current_script_dir, '..', 'utils'))
@@ -430,160 +380,125 @@ if __name__ == '__main__':
 
         VISUALIZATION_ENABLED = True
     except ImportError:
+        VISUALIZATION_ENABLED = False
         print("ПРЕДУПРЕЖДЕНИЕ: Модуль plot_utils не найден. Визуализация будет отключена.")
-        print(f"  Ожидался путь к utils: {_utils_path}")
-        VISUALIZATION_ENABLED = False
     except Exception as e_imp:
-        print(f"ПРЕДУПРЕЖДЕНИЕ: Ошибка при импорте plot_utils: {e_imp}. Визуализация будет отключена.")
         VISUALIZATION_ENABLED = False
+        print(f"ПРЕДУПРЕЖДЕНИЕ: Ошибка при импорте plot_utils: {e_imp}. Визуализация будет отключена.")
 
     if not CONFIG_LOAD_SUCCESS:
-        print(
-            "\n!!! ВНИМАНИЕ: Конфигурационные файлы не были загружены корректно. Тестирование может быть неточным или использовать дефолты.")
+        print("\n!!! ВНИМАНИЕ: Конфигурационные файлы не были загружены корректно.")
 
-    print(f"--- Тестирование detector_data_loader.py (3 СЛУЧАЙНЫХ ФАЙЛА) ---")
-    print(f"Параметры сетки: GRID_HEIGHT={GRID_HEIGHT}, GRID_WIDTH={GRID_WIDTH}")
-    print(f"Якоря (W_norm, H_norm) используются внутри py_func:\n{ANCHORS_WH_NORMALIZED}")
-    print(f"Количество якорей на ячейку: {NUM_ANCHORS_PER_LOCATION}")
-    print(f"Количество классов: {NUM_CLASSES_DETECTOR} ({CLASSES_LIST_GLOBAL_FOR_DETECTOR})")
-
+    print(f"--- Тестирование detector_data_loader.py (Оригинал + Аугментация) ---")
+    print(f"  Глобальный флаг USE_AUGMENTATION_CFG из конфига: {USE_AUGMENTATION_CFG}")
+    print(f"  AUGMENTATION_FUNC_AVAILABLE: {AUGMENTATION_FUNC_AVAILABLE}")
+    # ... (остальной print параметров сетки, якорей, классов) ...
     _master_dataset_abs_for_test = MASTER_DATASET_PATH_ABS
-
-    # Имена подпапок категорий в Master_Dataset (из base_config.yaml)
     source_subfolder_keys_for_test = [
         BASE_CONFIG.get('source_defective_road_img_parent_subdir', 'Defective_Road_Images'),
         BASE_CONFIG.get('source_normal_road_img_parent_subdir', 'Normal_Road_Images'),
-        BASE_CONFIG.get('source_not_road_img_parent_subdir', 'Not_Road_Images')
-    ]
+        BASE_CONFIG.get('source_not_road_img_parent_subdir', 'Not_Road_Images')]
     images_subdir_name_in_master = BASE_CONFIG.get('dataset', {}).get('images_dir', 'JPEGImages')
     annotations_subdir_name_in_master = BASE_CONFIG.get('dataset', {}).get('annotations_dir', 'Annotations')
 
-    print(f"\nТестовые пути для detector_data_loader.py (сканируем Master_Dataset):")
-    print(f"  Корень Master_Dataset: {_master_dataset_abs_for_test}")
-
-    example_image_paths = []
-    example_xml_paths = []
-
+    print(f"\nТестовые пути (сканируем Master_Dataset): Корень: {_master_dataset_abs_for_test}")
+    example_image_paths, example_xml_paths = [], []
     if not os.path.isdir(_master_dataset_abs_for_test):
-        print(f"ОШИБКА: Директория мастер-датасета не найдена: {_master_dataset_abs_for_test}")
+        print(f"ОШИБКА: Директория мастер-датасета не найдена.")
     else:
         for category_subdir_name in source_subfolder_keys_for_test:
             if not category_subdir_name: continue
-
-            current_images_dir_for_test = os.path.join(_master_dataset_abs_for_test, category_subdir_name,
-                                                       images_subdir_name_in_master)
-            current_annotations_dir_for_test = os.path.join(_master_dataset_abs_for_test, category_subdir_name,
-                                                            annotations_subdir_name_in_master)
-
-            if not os.path.isdir(current_images_dir_for_test) or not os.path.isdir(current_annotations_dir_for_test):
-                continue
-
-            valid_extensions = ['.jpg', '.jpeg', '.png']
-            image_files_in_category = []
-            for ext in valid_extensions:
-                image_files_in_category.extend(glob.glob(os.path.join(current_images_dir_for_test, f"*{ext.lower()}")))
-                image_files_in_category.extend(glob.glob(os.path.join(current_images_dir_for_test, f"*{ext.upper()}")))
-
-            image_files_in_category = sorted(list(set(image_files_in_category)))
-
-            for img_path_abs_str in image_files_in_category:
-                base_name, _ = os.path.splitext(os.path.basename(img_path_abs_str))
-                xml_file_abs_str = os.path.join(current_annotations_dir_for_test, base_name + ".xml")
-
-                if os.path.exists(xml_file_abs_str):
-                    example_image_paths.append(img_path_abs_str)
-                    example_xml_paths.append(xml_file_abs_str)
+            current_images_dir = os.path.join(_master_dataset_abs_for_test, category_subdir_name,
+                                              images_subdir_name_in_master)
+            current_annotations_dir = os.path.join(_master_dataset_abs_for_test, category_subdir_name,
+                                                   annotations_subdir_name_in_master)
+            if not os.path.isdir(current_images_dir) or not os.path.isdir(current_annotations_dir): continue
+            valid_ext = ['.jpg', '.jpeg', '.png'];
+            img_files_cat = []
+            for ext in valid_ext:
+                img_files_cat.extend(glob.glob(os.path.join(current_images_dir, f"*{ext.lower()}")))
+                img_files_cat.extend(glob.glob(os.path.join(current_images_dir, f"*{ext.upper()}")))
+            for img_path in sorted(list(set(img_files_cat))):
+                base, _ = os.path.splitext(os.path.basename(img_path));
+                xml_path = os.path.join(current_annotations_dir, base + ".xml")
+                if os.path.exists(xml_path): example_image_paths.append(img_path); example_xml_paths.append(xml_path)
 
         if not example_image_paths:
-            print("\nНе найдено совпадающих пар изображение/аннотация в Master_Dataset.")
+            print("\nНе найдено пар в Master_Dataset.")
         else:
-            print(f"\nВсего найдено {len(example_image_paths)} пар изображение/аннотация в Master_Dataset.")
+            print(f"\nВсего {len(example_image_paths)} пар в Master_Dataset.")
 
-            num_test_files_to_load = min(len(example_image_paths), 3)
+            # --- НОВАЯ ПЕРЕМЕННАЯ: СКОЛЬКО ПРИМЕРОВ ПОКАЗАТЬ ---
+            num_examples_to_visualize = 10
+            # ----------------------------------------------------
+
+            num_test_files_to_load = min(len(example_image_paths), num_examples_to_visualize)
 
             if num_test_files_to_load == 0:
-                print("Нет файлов для создания тестового датасета.")
+                print("Нет файлов для теста.")
             else:
                 import random
 
-                # random.seed(42) # Закомментируй для реальной случайности, или установи для воспроизводимости
+                # random.seed(42) # Закомментируй для случайности, или установи для воспроизводимости конкретных файлов
 
                 paired_files = list(zip(example_image_paths, example_xml_paths))
                 random.shuffle(paired_files)
                 selected_pairs = paired_files[:num_test_files_to_load]
 
-                test_image_paths = [pair[0] for pair in selected_pairs]
-                test_xml_paths = [pair[1] for pair in selected_pairs]
-
                 print(
-                    f"Будет протестировано и визуализировано на {len(test_image_paths)} СЛУЧАЙНЫХ файлах из Master_Dataset:")
-                for p_idx, p_path in enumerate(test_image_paths):
-                    print(f"  {p_idx + 1}. {os.path.basename(p_path)}")
+                    f"Будет протестировано и визуализировано (оригинал + аугментация) на {len(selected_pairs)} случайных файлах:")
+                for p_idx, (p_img_path, p_xml_path) in enumerate(selected_pairs):
+                    print(f"  {p_idx + 1}. {os.path.basename(p_img_path)}")
 
-                current_test_batch_size = 1
+                    current_test_batch_size = 1  # Обрабатываем по одному файлу для наглядности
 
-                dataset = create_detector_tf_dataset(
-                    test_image_paths,
-                    test_xml_paths,
-                    batch_size=current_test_batch_size,
-                    shuffle=False
-                )
-
-                print("\nОбработка и визуализация примеров из датасета детектора:")
-                try:
-                    for i, (images_batch, y_true_batch) in enumerate(dataset.take(len(test_image_paths))):
-                        # КОПИРУЙ ОСТАТОК БЛОКА if __name__ == '__main__': ИЗ ПРЕДЫДУЩЕГО ОТВЕТА СЮДА
-                        # НАЧИНАЯ С print(f"\n--- Батч {i + 1} ...") И ДО КОНЦА БЛОКА
-                        print(f"\n--- Батч {i + 1} (детектор с y_true для сетки/якорей) ---")
-                        print("Форма батча изображений:", images_batch.shape)
-                        print("Форма батча y_true:", y_true_batch.shape)
-
-                        if images_batch.shape[0] > 0:
-                            for k_img_in_batch in range(images_batch.shape[0]):
-                                current_image_path_index_in_selection = i * current_test_batch_size + k_img_in_batch
-                                current_img_filename_for_print = "Unknown"
-                                if current_image_path_index_in_selection < len(test_image_paths):
-                                    current_img_filename_for_print = os.path.basename(
-                                        test_image_paths[current_image_path_index_in_selection])
-
-                                print(
-                                    f"  --- Изображение {k_img_in_batch + 1} в батче ({current_img_filename_for_print}) ---")
-                                single_image_np = images_batch[k_img_in_batch].numpy()
-                                single_y_true_np = y_true_batch[k_img_in_batch].numpy()
-
-                                objectness_scores_map = single_y_true_np[..., 4]
-                                responsible_anchors_indices = tf.where(objectness_scores_map > 0.5)
-
-                                if tf.size(responsible_anchors_indices) > 0:
-                                    print(
-                                        f"    Найдено {tf.size(responsible_anchors_indices) // 3} 'ответственных' ячеек/якорей:")
-                                    for cell_coords_tf in responsible_anchors_indices:
-                                        gy, gx, ga = cell_coords_tf.numpy()
-                                        anchor_data = single_y_true_np[gy, gx, ga]
-                                        class_one_hot = anchor_data[5:]
-                                        class_id_detected = np.argmax(class_one_hot)
-                                        class_name_detected = CLASSES_LIST_GLOBAL_FOR_DETECTOR[
-                                            class_id_detected] if class_id_detected < len(
-                                            CLASSES_LIST_GLOBAL_FOR_DETECTOR) and class_one_hot[
-                                                                      class_id_detected] > 0.5 else "None"
-                                        print(
-                                            f"      Ячейка({gy},{gx}), Якорь_idx {ga}: Obj={anchor_data[4]:.1f}, Box(tx,ty,tw,th)={np.round(anchor_data[0:4], 2)}, ClassID={class_id_detected} ({class_name_detected})")
-                                else:
-                                    print(
-                                        f"    Не найдено объектов (все objectness в y_true <= 0.5). Нормально для негативных примеров.")
-
+                    # --- 1. Обработка БЕЗ аугментации ---
+                    print(f"\n  --- Обработка ОРИГИНАЛА для: {os.path.basename(p_img_path)} ---")
+                    dataset_no_aug = create_detector_tf_dataset(
+                        [p_img_path], [p_xml_path],
+                        batch_size=current_test_batch_size,
+                        shuffle=False,
+                        augment=False  # ЯВНО отключаем аугментацию
+                    )
+                    try:
+                        for images_batch, y_true_batch in dataset_no_aug.take(1):
+                            print("    Img shape (оригинал):", images_batch.shape, "y_true shape (оригинал):",
+                                  y_true_batch.shape)
+                            if images_batch.shape[0] > 0:
+                                s_img, s_ytrue = images_batch[0].numpy(), y_true_batch[0].numpy()
+                                # ... (код для вывода информации об ответственных якорях - можно скопировать из предыдущей версии, если нужно) ...
                                 if VISUALIZATION_ENABLED:
-                                    print(f"    Вызов visualize_data_sample для {current_img_filename_for_print}...")
-                                    visualize_data_sample(single_image_np, single_y_true_np,
-                                                          title=f"Ground Truth for {current_img_filename_for_print}")
-                                else:
-                                    print("    Визуализация отключена (plot_utils не импортирован).")
-                        else:
-                            print("  Батч изображений пуст.")
-                except Exception as e_dataset:
-                    print(f"ОШИБКА при итерации по датасету детектора: {e_dataset}")
-                    import traceback
+                                    visualize_data_sample(s_img, s_ytrue,
+                                                          title=f"GT for {os.path.basename(p_img_path)} (Original)")
+                    except Exception as e:
+                        print(f"    ОШИБКА при обработке оригинала: {e}")
 
-                    traceback.print_exc()
+                    # --- 2. Обработка С аугментацией (если включена глобально) ---
+                    if USE_AUGMENTATION_CFG and AUGMENTATION_FUNC_AVAILABLE:
+                        print(f"\n  --- Обработка АУГМЕНТИРОВАННОЙ версии для: {os.path.basename(p_img_path)} ---")
+                        dataset_with_aug = create_detector_tf_dataset(
+                            [p_img_path], [p_xml_path],
+                            batch_size=current_test_batch_size,
+                            shuffle=False,  # Shuffle не нужен, так как мы берем тот же самый файл
+                            augment=True  # ЯВНО включаем аугментацию
+                        )
+                        try:
+                            for images_batch_aug, y_true_batch_aug in dataset_with_aug.take(1):
+                                print("    Img shape (аугм.):", images_batch_aug.shape, "y_true shape (аугм.):",
+                                      y_true_batch_aug.shape)
+                                if images_batch_aug.shape[0] > 0:
+                                    s_img_aug, s_ytrue_aug = images_batch_aug[0].numpy(), y_true_batch_aug[0].numpy()
+                                    # ... (код для вывода информации об ответственных якорях для аугментированной версии) ...
+                                    if VISUALIZATION_ENABLED:
+                                        visualize_data_sample(s_img_aug, s_ytrue_aug,
+                                                              title=f"GT for {os.path.basename(p_img_path)} (AUGMENTED)")
+                        except Exception as e:
+                            print(f"    ОШИБКА при обработке аугментированной версии: {e}")
+                    elif not AUGMENTATION_FUNC_AVAILABLE:
+                        print(
+                            f"\n  --- Аугментация для {os.path.basename(p_img_path)} пропущена (AUGMENTATION_FUNC_AVAILABLE = False) ---")
+                    else:  # USE_AUGMENTATION_CFG is False
+                        print(
+                            f"\n  --- Аугментация для {os.path.basename(p_img_path)} пропущена (USE_AUGMENTATION_CFG = False в конфиге) ---")
 
-    print("\n--- Тестирование detector_data_loader.py (с новым y_true и визуализацией) завершено ---")
+    print("\n--- Тестирование detector_data_loader.py завершено ---")
