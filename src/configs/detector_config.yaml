@@ -1,23 +1,21 @@
-# RoadDefectDetector/src/configs/detector_config.yaml
+# src/configs/detector_config.yaml
 
-# --- Параметры Модели Детектора ---
-model_name: "CustomObjectDetector_MobileNetV2_Head_v1" # Описательное имя твоей модели (можно изменить, если улучшаешь голову)
-backbone_name: "MobileNetV2"        # Какую pre-trained модель использовать как основу
-input_shape: [416, 416, 3]       # Входной размер изображений для детектора [высота, ширина, каналы]
-                                 # Должен совпадать с target_height/width из data_loader
-freeze_backbone: true          # true - заморозить веса базовой модели (для начального обучения "голов")
-                                 # false - разморозить backbone для fine-tuning (используй с очень низким LR)
+# --- Общие Параметры Модели Детектора ---
+model_base_name: "RoadDefectDetector_v1"    # Базовое имя для файлов моделей и логов
+backbone_name: "MobileNetV2"                # Какую pre-trained модель использовать как основу
+input_shape: [416, 416, 3]               # Входной размер изображений для детектора
+backbone_layer_name_in_model: "Backbone_MobileNetV2" # Имя слоя backbone в модели (проверь model.summary())
 
-# Параметры для "тела" и "головы" предсказаний
-head_conv_filters: 256           # Количество фильтров в сверточных слоях "тела" и "головы"
+# Параметры для "головы" предсказаний (используются в build_object_detector_v1_enhanced)
+head_body_conv_filters: 256                 # Фильтры в первом слое "тела" головы
+head_body_depth: 2                          # Количество Conv-BN-LeakyReLU блоков в "теле" головы
+leaky_relu_alpha: 0.1                       # Alpha для LeakyReLU
+l2_regularization: 0.0005                   # Коэффициент L2 регуляризации
 
 # --- Параметры Классов и Якорей ---
-classes: ["pit", "crack"]        # Список классов для детекции. Порядок важен (pit:0, crack:1)
-                                 # Убедись, что совпадает с разметкой XML и CLASSES_LIST_GLOBAL_FOR_DETECTOR в data_loader
-num_classes: 2                   # Количество классов, должно соответствовать длине списка 'classes'
-
-# Якорные рамки (anchors), рассчитанные с помощью calculate_anchors.py
-# Формат: [нормализованная_ширина, нормализованная_высота] относительно всего изображения
+classes: ["pit", "crack"]                  # pit:0, crack:1
+num_classes: 2
+# ЗАМЕНИ ЭТИ ЯКОРЯ на те, что получишь от K-Means кластеризации на твоем полном датасете!
 anchors_wh_normalized:
   - [0.1326, 0.0919]
   - [0.1059, 0.3704]
@@ -25,29 +23,51 @@ anchors_wh_normalized:
   - [0.1484, 0.8278]
   - [0.7600, 0.2444]
   - [0.6420, 0.6129]
+num_anchors_per_location: 6
 
-num_anchors_per_location: 6    # Количество якорей, используемых в каждой ячейке сетки предсказаний.
-                               # Должно соответствовать количеству пар в anchors_wh_normalized.
+# --- Режим и Параметры Обучения ---
+# Устанавливаем режим для FINE-TUNING'а
+continue_from_checkpoint: true        # <<<--- Устанавливаем в true, чтобы загрузить модель
+path_to_checkpoint: "detector_v1_best_overall.keras" # <<<--- ЗАМЕНИ НА ИМЯ ТВОЕЙ ЛУЧШЕЙ МОДЕЛИ
+                                       # (например, detector_v1_best_overall.keras или как она у тебя называется
+                                       # после начального обучения с замороженным backbone)
 
-# --- Параметры Аугментации ---
-use_augmentation: true        # Установи в true, чтобы использовать аугментацию, false - чтобы отключить
+unfreeze_backbone: true               # <<<--- Устанавливаем в true, чтобы разморозить backbone
 
-# --- Параметры Обучения Детектора ---
-train_params:
-  batch_size: 4                # Попробуй 2, 4, или 8, в зависимости от VRAM.
-  epochs: 150                  # Максимальное количество эпох (EarlyStopping может остановить раньше)
-  learning_rate: 0.0001        # (1e-4) Начальная скорость обучения для Adam
+# Параметры для разморозки backbone (если unfreeze_backbone: true)
+# 0 - разморозить весь backbone. >0 - количество слоев с КОНЦА backbone, которые будут обучаться.
+unfreeze_backbone_layers_from_end: 0  # <<<--- Размораживаем весь backbone
 
-  # Параметры для коллбэков
-  early_stopping_patience: 20  # Количество эпох без улучшения val_loss перед остановкой
-  lr_factor: 0.2               # Множитель для снижения LR (0.2 -> уменьшить в 5 раз)
-  lr_patience: 7               # Количество эпох без улучшения val_loss перед снижением LR
-  min_lr: 0.000001             # (1e-6) Минимальная скорость обучения
+# Общие параметры обучения (эпохи для текущего сеанса)
+batch_size: 2                         # Для fine-tuning'а часто уменьшают batch_size из-за увеличения потребления памяти
+epochs: 100                            # Количество эпох для fine-tuning'а (может быть меньше, чем для начального)
+
+# Learning Rates
+initial_learning_rate: 0.0001         # Этот LR будет использован, если continue_from_checkpoint=false
+finetune_learning_rate: 0.00001     # (1e-5) <<<--- Этот LR будет использован, т.к. unfreeze_backbone: true
+
+# Параметры Callbacks
+early_stopping_patience: 15           # Терпение для EarlyStopping при fine-tuning'е (можно сделать чуть меньше)
+reduce_lr_patience: 5                # Терпение для ReduceLROnPlateau при fine-tuning'е
+reduce_lr_factor: 0.2
+min_lr_on_plateau: 0.0000001 # (1e-7) Можно еще ниже для fine-tuning'а
+
+# Аугментация
+use_augmentation: false # <<<--- ЧАСТО ПРИ FINE-TUNING'Е АУГМЕНТАЦИЮ ДЕЛАЮТ МЕНЕЕ АГРЕССИВНОЙ ИЛИ ВЫКЛЮЧАЮТ
+                        # Если хочешь использовать, установи в true и убедись, что
+                        # train_detector.py это учитывает для fine-tuning'а
+                        # (в текущей версии train_detector.py флаг current_use_augmentation
+                        # будет равен этому значению, если мы не в initial_train без unfreeze)
 
 # --- Параметры Функции Потерь ---
 loss_weights:
-  coordinates: 1.0             # Вес для потерь координат рамок (box_loss)
-  objectness: 1.0              # Вес для потерь "уверенности в наличии объекта" для позитивных якорей
-  no_object: 0.5               # Вес для потерь "уверенности в наличии объекта" для негативных якорей (фон)
-  classification: 1.0          # Вес для потерь классификации объекта (class_loss)
+  coordinates: 1.5
+  objectness: 1.0
+  no_object: 0.7
+  classification: 1.0
 
+# --- Параметры для Инференса ---
+predict_params:
+  confidence_threshold: 0.25 # Подбери после fine-tuning'а
+  iou_threshold: 0.45        # Подбери после fine-tuning'а
+  max_detections: 100
