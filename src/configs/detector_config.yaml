@@ -55,7 +55,7 @@ unfreeze_backbone: false
 finetune_keep_bn_frozen: true # Важно для будущего fine-tuning'а
 unfreeze_backbone_layers_from_end: 0 # Не влияет, пока unfreeze_backbone: false
 
-batch_size: 8 # Попробуем с 8, если твоя 3060Ti (8GB или 12GB?) позволяет
+batch_size: 4
 epochs: 150   # С EarlyStopping
 
 # Learning Rates

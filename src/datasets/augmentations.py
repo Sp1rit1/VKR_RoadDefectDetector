@@ -6,54 +6,45 @@ from pathlib import Path
 
 
 def get_detector_train_augmentations(img_height, img_width):
-    """
-    Возвращает сбалансированную и "мягкую" композицию аугментаций
-    из albumentations, стараясь избегать UserWarnings.
-    """
     return A.Compose([
         A.HorizontalFlip(p=0.5),
 
         A.Affine(
             scale=(0.9, 1.1),
-            translate_percent=(-0.05, 0.05),
+            translate_percent=(-0.05, 0.05),  # Сделали меньше
             rotate=(-7, 7),
-            shear=(-3, 3),
-            p=0.5,
-            # Убираем параметры цвета/заполнения границы, полагаясь на дефолты Albumentations
-            # для cv2.BORDER_CONSTANT (часто это 0 - черный).
-            # Если нужно будет явно, придется смотреть документацию для твоей версии
-            # на предмет правильного параметра: value, cval, border_value и т.д.
+            shear=(-3, 3),  # Сделали меньше
+            p=0.5,  # Уменьшили вероятность
             border_mode=cv2.BORDER_CONSTANT,
+            # cval=0, # Убрали, BORDER_CONSTANT по умолчанию 0
             keep_ratio=True
         ),
 
         A.RandomBrightnessContrast(
-            brightness_limit=0.1,
+            brightness_limit=0.1,  # Оставим умеренным
             contrast_limit=0.1,
-            p=0.4
+            p=0.5
         ),
-
         A.HueSaturationValue(
-            hue_shift_limit=7,
-            sat_shift_limit=15,
-            val_shift_limit=7,
+            hue_shift_limit=8,  # Чуть меньше
+            sat_shift_limit=20,  # Чуть меньше
+            val_shift_limit=8,  # Чуть меньше
             p=0.3
         ),
 
-        # Гауссов шум - самый простой вызов, полагаемся на дефолтные значения силы шума
-        A.GaussNoise(p=0.2),
+        # A.GaussNoise(p=0.1, var_limit=(1.0, 5.0)), # ПОКА ПОЛНОСТЬЮ ВЫКЛЮЧЕН
+        # Можно будет вернуть очень слабый, если нужно
 
         A.OneOf([
-            A.MotionBlur(blur_limit=(3, 5), p=0.5),
-            A.MedianBlur(blur_limit=3, p=0.3),
-            A.Blur(blur_limit=3, p=0.3),
-        ], p=0.2),
+            A.MedianBlur(blur_limit=3, p=0.2),  # p здесь - это вероятность выбора внутри OneOf
+            A.Blur(blur_limit=3, p=0.2),
+        ], p=0.15),  # Общая вероятность блока OneOf
 
     ], bbox_params=A.BboxParams(
         format='pascal_voc',
         label_fields=['class_labels_for_albumentations'],
         min_visibility=0.3,
-        min_area=50
+        min_area=30
     ))
 
 

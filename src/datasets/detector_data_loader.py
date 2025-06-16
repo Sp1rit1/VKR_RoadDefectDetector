@@ -441,7 +441,7 @@ if __name__ == '__main__':
             print(
                 f"\nВсего найдено {len(example_image_paths_main)} пар изображение/аннотация в data/Detector_Dataset_Ready/train/.")
 
-            num_examples_to_show = min(len(example_image_paths_main), 3)  # Показываем до 3х примеров
+            num_examples_to_show = min(len(example_image_paths_main), 10)  # Показываем до 3х примеров
 
             if num_examples_to_show == 0:
                 print("Нет файлов для теста.")
