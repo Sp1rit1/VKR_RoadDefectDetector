@@ -1,4 +1,4 @@
-# run_prediction_pipeline.py
+# RoadDefectDetector/run_prediction_pipeline.py
 import tensorflow as tf
 import numpy as np
 import cv2
@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 import json
 
+# --- Добавляем src в sys.path ---
 _project_root_pipeline = Path(__file__).resolve().parent
 _src_path_pipeline = _project_root_pipeline / 'src'
 import sys
@@ -16,332 +17,353 @@ import sys
 if str(_src_path_pipeline) not in sys.path:
     sys.path.insert(0, str(_src_path_pipeline))
 
+# --- Импорты из твоих модулей ---
+CUSTOM_OBJECTS_PIPELINE = {}
 try:
-    from losses.detection_losses import compute_detector_loss_v1, compute_detector_loss_v2_fpn
+    from losses.detection_losses import compute_detector_loss_v2_fpn, compute_detector_loss_v1
 
-    # Мы можем не знать, какая модель загружается, поэтому передадим обе, если они есть
-    CUSTOM_OBJECTS_DETECTOR = {
-        'compute_detector_loss_v1': compute_detector_loss_v1,
-        'compute_detector_loss_v2_fpn': compute_detector_loss_v2_fpn
-    }
-    print("INFO (run_prediction_pipeline.py): Кастомные функции потерь детектора для custom_objects ЗАГРУЖЕНЫ.")
-except ImportError:
-    CUSTOM_OBJECTS_DETECTOR = {}
-    print("ПРЕДУПРЕЖДЕНИЕ (run_prediction_pipeline.py): Одна или обе кастомные функции потерь не найдены.")
-
-CLASSIFIER_MODEL = None
-DETECTOR_MODEL = None
-PREDICT_CONFIG = None
+    CUSTOM_OBJECTS_PIPELINE['compute_detector_loss_v2_fpn'] = compute_detector_loss_v2_fpn
+    CUSTOM_OBJECTS_PIPELINE['compute_detector_loss_v1'] = compute_detector_loss_v1
+    print("INFO (run_prediction_pipeline.py): Кастомные функции потерь ЗАГРУЖЕНЫ.")
+except ImportError as e_loss:
+    print(
+        f"ПРЕДУПРЕЖДЕНИЕ (run_prediction_pipeline.py): Одна или несколько кастомных функций потерь не найдены: {e_loss}.")
+except Exception as e_gen_loss:
+    print(f"ПРЕДУПРЕЖДЕНИЕ (run_prediction_pipeline.py): Общая ошибка при импорте функций потерь: {e_gen_loss}.")
 
 
-def load_pipeline_configs():
-    global PREDICT_CONFIG
-    if PREDICT_CONFIG is not None: return True
-    _predict_config_path_here = _src_path_pipeline / 'configs' / 'predict_config.yaml'
+# --- Загрузка Конфигураций ---
+def load_config_pipeline_strict(config_path_obj, config_name_for_log):
     try:
-        with open(_predict_config_path_here, 'r', encoding='utf-8') as f:
-            PREDICT_CONFIG = yaml.safe_load(f)
-        if not isinstance(PREDICT_CONFIG, dict) or not PREDICT_CONFIG:
-            print(f"ОШИБКА: predict_config.yaml ({_predict_config_path_here}) пуст или имеет неверный формат.")
-            PREDICT_CONFIG = None;
-            return False
-        print("INFO: predict_config.yaml успешно загружен.")
-        return True
-    except Exception as e:
-        print(f"ОШИБКА: Не удалось загрузить predict_config.yaml: {e}");
-        PREDICT_CONFIG = None;
-        return False
+        with open(config_path_obj, 'r', encoding='utf-8') as f:
+            cfg = yaml.safe_load(f)
+        if not isinstance(cfg, dict) or not cfg:
+            print(f"ОШИБКА: {config_path_obj.name} пуст или имеет неверный формат для '{config_name_for_log}'. Выход.")
+            exit()
+        print(f"INFO: Конфиг '{config_name_for_log}' ({config_path_obj.name}) успешно загружен.")
+        return cfg
+    except FileNotFoundError:
+        print(f"ОШИБКА: Файл {config_path_obj.name} не найден: {config_path_obj}. Выход.");
+        exit()
+    except yaml.YAMLError as e:
+        print(f"ОШИБКА YAML в {config_path_obj.name}: {e}. Выход.");
+        exit()
 
 
-def load_models_once():
-    # ... (код этой функции как был, загружает модели на основе PREDICT_CONFIG) ...
-    global CLASSIFIER_MODEL, DETECTOR_MODEL
-    if CLASSIFIER_MODEL is not None and DETECTOR_MODEL is not None: return True
-    if PREDICT_CONFIG is None:
-        if not load_pipeline_configs(): return False
+_predict_config_path_obj = _src_path_pipeline / 'configs' / 'predict_config.yaml'
+_detector_arch_config_path_obj = _src_path_pipeline / 'configs' / 'detector_config.yaml'
 
-    classifier_model_path_rel = PREDICT_CONFIG.get("classifier_model_path")
-    detector_model_path_rel = PREDICT_CONFIG.get("detector_model_path")
-    if not classifier_model_path_rel or not detector_model_path_rel:
-        print("ОШИБКА: Пути к моделям не указаны в predict_config.yaml");
-        return False
+print("--- Загрузка конфигурационных файлов для пайплайна ---")
+PREDICT_CONFIG = load_config_pipeline_strict(_predict_config_path_obj, "Predict Config")
+DETECTOR_ARCH_CONFIG = load_config_pipeline_strict(_detector_arch_config_path_obj, "Detector Architecture Config")
 
-    classifier_model_full_path = (_project_root_pipeline / classifier_model_path_rel).resolve()
-    detector_model_full_path = (_project_root_pipeline / detector_model_path_rel).resolve()
+# --- Параметры из PREDICT_CONFIG ---
+CLS_MODEL_PATH = PREDICT_CONFIG.get("classifier_model_path")
+DET_MODEL_PATH = PREDICT_CONFIG.get("detector_model_path")
+DETECTOR_TYPE = PREDICT_CONFIG.get("detector_type", "fpn").lower()
 
-    try:
-        print(f"Загрузка классификатора из: {classifier_model_full_path}...")
-        if not classifier_model_full_path.exists(): raise FileNotFoundError(
-            f"Файл классификатора не найден: {classifier_model_full_path}")
-        CLASSIFIER_MODEL = tf.keras.models.load_model(str(classifier_model_full_path), compile=False)
-        print("Классификатор успешно загружен.")
+CLS_INPUT_SHAPE = tuple(PREDICT_CONFIG.get('classifier_input_shape', [224, 224, 3]))
+CLS_TARGET_IMG_HEIGHT, CLS_TARGET_IMG_WIDTH = CLS_INPUT_SHAPE[0], CLS_INPUT_SHAPE[1]
+CLS_CLASS_NAMES_FROM_PREDICT_CFG = PREDICT_CONFIG.get('classifier_class_names_ordered_by_keras', ['not_road', 'road'])
+CLASSIFIER_ROAD_CLASS_NAME_CFG = PREDICT_CONFIG.get('classifier_road_class_name', 'road')
 
-        print(f"Загрузка детектора из: {detector_model_full_path}...")
-        if not detector_model_full_path.exists(): raise FileNotFoundError(
-            f"Файл детектора не найден: {detector_model_full_path}")
-        DETECTOR_MODEL = tf.keras.models.load_model(str(detector_model_full_path),
-                                                    custom_objects=CUSTOM_OBJECTS_DETECTOR, compile=False)
-        print("Детектор успешно загружен.")
-        return True
-    except Exception as e:
-        print(f"ОШИБКА загрузки одной из моделей: {e}");
-        CLASSIFIER_MODEL = None;
-        DETECTOR_MODEL = None;
-        return False
+# Общие параметры детектора из predict_config (для проверки согласованности и базовых вещей)
+DET_INPUT_SHAPE_PREDICT = tuple(PREDICT_CONFIG.get('detector_input_shape', [416, 416, 3]))
+DET_TARGET_IMG_HEIGHT, DET_TARGET_IMG_WIDTH = DET_INPUT_SHAPE_PREDICT[0], DET_INPUT_SHAPE_PREDICT[1]
+DET_CLASSES_LIST_PREDICT = PREDICT_CONFIG.get('detector_class_names', ['pit', 'crack'])
+DET_NUM_CLASSES = len(DET_CLASSES_LIST_PREDICT)
+
+# --- Загрузка специфичных для детектора параметров из DETECTOR_ARCH_CONFIG на основе DETECTOR_TYPE ---
+if DETECTOR_TYPE == "fpn":
+    fpn_params = DETECTOR_ARCH_CONFIG.get('fpn_detector_params', {})
+    if not fpn_params: print(f"ОШИБКА: Секция 'fpn_detector_params' не найдена в detector_config.yaml."); exit()
+    # Проверка согласованности базовых параметров
+    if tuple(fpn_params.get('input_shape', DET_INPUT_SHAPE_PREDICT)) != DET_INPUT_SHAPE_PREDICT:
+        print("ПРЕДУПРЕЖДЕНИЕ: input_shape в predict_config и fpn_detector_params в detector_config отличаются!")
+    if fpn_params.get('classes', DET_CLASSES_LIST_PREDICT) != DET_CLASSES_LIST_PREDICT:
+        print("ПРЕДУПРЕЖДЕНИЕ: classes в predict_config и fpn_detector_params в detector_config отличаются!")
+
+    DET_FPN_LEVELS = fpn_params.get('detector_fpn_levels', ['P3', 'P4', 'P5'])
+    DET_FPN_STRIDES = fpn_params.get('detector_fpn_strides', {'P3': 8, 'P4': 16, 'P5': 32})
+    DET_FPN_ANCHOR_CONFIGS = fpn_params.get('detector_fpn_anchor_configs', {})
+    if not DET_FPN_ANCHOR_CONFIGS or not all(lvl in DET_FPN_ANCHOR_CONFIGS for lvl in DET_FPN_LEVELS):
+        print(f"ОШИБКА: Конфигурация якорей для FPN не найдена/неполна в detector_config.yaml -> fpn_detector_params");
+        exit()
+
+elif DETECTOR_TYPE == "single_level":
+    sl_params = DETECTOR_ARCH_CONFIG.get('single_level_detector_params', {})
+    if not sl_params: print(f"ОШИБКА: Секция 'single_level_detector_params' не найдена в detector_config.yaml."); exit()
+    if tuple(sl_params.get('input_shape', DET_INPUT_SHAPE_PREDICT)) != DET_INPUT_SHAPE_PREDICT:
+        print(
+            "ПРЕДУПРЕЖДЕНИЕ: input_shape в predict_config и single_level_detector_params в detector_config отличаются!")
+    if sl_params.get('classes', DET_CLASSES_LIST_PREDICT) != DET_CLASSES_LIST_PREDICT:
+        print("ПРЕДУПРЕЖДЕНИЕ: classes в predict_config и single_level_detector_params в detector_config отличаются!")
+
+    SINGLE_ANCHORS_WH_NORM_LIST = sl_params.get('anchors_wh_normalized',
+                                                [[0.1, 0.1]] * sl_params.get('num_anchors_per_location', 3))
+    SINGLE_ANCHORS_WH_NORM = np.array(SINGLE_ANCHORS_WH_NORM_LIST, dtype=np.float32)
+    SINGLE_NUM_ANCHORS = SINGLE_ANCHORS_WH_NORM.shape[0]
+    SINGLE_NETWORK_STRIDE = sl_params.get('network_stride', 16)
+    SINGLE_GRID_HEIGHT = DET_TARGET_IMG_HEIGHT // SINGLE_NETWORK_STRIDE
+    SINGLE_GRID_WIDTH = DET_TARGET_IMG_WIDTH // SINGLE_NETWORK_STRIDE
+else:
+    print(f"ОШИБКА: Неизвестный detector_type: '{DETECTOR_TYPE}'. Должен быть 'fpn' или 'single_level'.");
+    exit()
 
 
-def preprocess_image_for_model(image_bgr, target_height, target_width):
-    # ... (код как был) ...
-    image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
+# --- Вспомогательные Функции (копируем из evaluate_detector.py) ---
+# preprocess_image_for_model_tf, decode_single_level_predictions_generic,
+# apply_nms_and_filter_generic, draw_detections_on_image
+# (Вставь сюда полные версии этих функций из evaluate_detector.py, они идентичны)
+def preprocess_image_for_model_tf(image_bgr, target_height, target_width):
+    image_rgb = tf.image.decode_image(tf.io.encode_jpeg(tf.reverse(image_bgr, axis=[-1])), channels=3)
     image_resized = tf.image.resize(image_rgb, [target_height, target_width])
-    image_normalized = image_resized / 255.0
+    image_normalized = tf.cast(image_resized, tf.float32) / 255.0
     image_batch = tf.expand_dims(image_normalized, axis=0)
     return image_batch
 
 
-def decode_single_head_predictions(raw_predictions_tensor, anchors_wh_normalized_list,
-                                   input_shape_detector_tuple, num_classes, network_stride):
-    # ... (код этой функции как был, но принимает list of lists для якорей)
-    # Убедимся, что anchors_wh_normalized_list это numpy array
-    anchors_wh_normalized_np = np.array(anchors_wh_normalized_list, dtype=np.float32)
-
-    batch_size = tf.shape(raw_predictions_tensor)[0]
-    grid_h = input_shape_detector_tuple[0] // network_stride
-    grid_w = input_shape_detector_tuple[1] // network_stride
-    num_anchors = anchors_wh_normalized_np.shape[0]
-
-    # Если модель уже выдает (B, Gh, Gw, A, 5+C), то reshape не нужен
-    # Предположим, что raw_predictions_tensor УЖЕ имеет правильную последнюю размерность якорей
-    # или был решейпнут в модели
-    # Если нет, то:
-    # raw_predictions_tensor = tf.reshape(raw_predictions_tensor,
-    #                                     [batch_size, grid_h, grid_w, num_anchors, 5 + num_classes])
-
-    pred_xy_raw = raw_predictions_tensor[..., 0:2]
-    pred_wh_raw = raw_predictions_tensor[..., 2:4]
-    pred_obj_logit = raw_predictions_tensor[..., 4:5]
-    pred_class_logits = raw_predictions_tensor[..., 5:]
-
-    gy = tf.tile(tf.range(grid_h, dtype=tf.float32)[:, tf.newaxis], [1, grid_w])
-    gx = tf.tile(tf.range(grid_w, dtype=tf.float32)[tf.newaxis, :], [grid_h, 1])
+def decode_single_level_predictions_generic(raw_level_preds, level_anchors_wh_norm, level_grid_h, level_grid_w,
+                                            num_classes):
+    batch_size = tf.shape(raw_level_preds)[0]
+    num_anchors_this_level = tf.shape(level_anchors_wh_norm)[0]
+    pred_xy_raw = raw_level_preds[..., 0:2];
+    pred_wh_raw = raw_level_preds[..., 2:4]
+    pred_obj_logit = raw_level_preds[..., 4:5];
+    pred_class_logits = raw_level_preds[..., 5:]
+    gy = tf.tile(tf.range(level_grid_h, dtype=tf.float32)[:, tf.newaxis], [1, level_grid_w])
+    gx = tf.tile(tf.range(level_grid_w, dtype=tf.float32)[tf.newaxis, :], [level_grid_h, 1])
     grid_xy = tf.stack([gx, gy], axis=-1)[tf.newaxis, :, :, tf.newaxis, :]
-    grid_xy = tf.tile(grid_xy, [batch_size, 1, 1, num_anchors, 1])
-
-    pred_xy = (tf.sigmoid(pred_xy_raw) + grid_xy) / tf.constant([grid_w, grid_h], dtype=tf.float32)
-
-    anchors_tf = tf.constant(anchors_wh_normalized_np, dtype=tf.float32)[tf.newaxis, tf.newaxis, tf.newaxis, :, :]
-    pred_wh = tf.exp(pred_wh_raw) * anchors_tf
-
-    boxes_xywh = tf.concat([pred_xy, pred_wh], axis=-1)
+    grid_xy = tf.tile(grid_xy, [batch_size, 1, 1, num_anchors_this_level, 1])
+    pred_xy_norm = (tf.sigmoid(pred_xy_raw) + grid_xy) / tf.constant([level_grid_w, level_grid_h], dtype=tf.float32)
+    anchors_t = tf.constant(level_anchors_wh_norm, dtype=tf.float32)[tf.newaxis, tf.newaxis, tf.newaxis, :, :]
+    pred_wh_norm = tf.exp(pred_wh_raw) * anchors_t
+    decoded_boxes_xywh_n = tf.concat([pred_xy_norm, pred_wh_norm], axis=-1)
     obj_conf = tf.sigmoid(pred_obj_logit)
-    cls_probs = tf.sigmoid(pred_class_logits)
-
-    flat_boxes = tf.reshape(boxes_xywh, [batch_size, -1, 4])
-    flat_obj = tf.reshape(obj_conf, [batch_size, -1, 1])
-    flat_cls = tf.reshape(cls_probs, [batch_size, -1, num_classes])
-    return flat_boxes, flat_obj, flat_cls
+    class_probs = tf.sigmoid(pred_class_logits)
+    return decoded_boxes_xywh_n, obj_conf, class_probs
 
 
-def decode_fpn_predictions_list_output(list_of_raw_level_outputs, fpn_anchor_configs_dict,
-                                       input_shape_detector_tuple, num_classes):
-    all_boxes_list, all_obj_list, all_cls_list = [], [], []
-    fpn_levels_order = PREDICT_CONFIG.get('detector_fpn_levels', ['P3', 'P4', 'P5'])  # Берем порядок из конфига
-
-    for i, level_name in enumerate(fpn_levels_order):
-        raw_preds_level = list_of_raw_level_outputs[i]  # (B, Gh_l, Gw_l, A_l, 5+C)
-        level_cfg = fpn_anchor_configs_dict.get(level_name, {})
-
-        anchors_this_level_list = level_cfg.get('anchors_wh_normalized', [])
-        stride_this_level = level_cfg.get('stride', 8 * (2 ** i))  # Дефолтный страйд
-
-        if not anchors_this_level_list:
-            print(f"ПРЕДУПРЕЖДЕНИЕ: Якоря для уровня FPN {level_name} не найдены в конфиге.")
-            continue
-
-        anchors_this_level_np = np.array(anchors_this_level_list, dtype=np.float32)
-
-        # Используем decode_single_head_predictions для каждого уровня
-        boxes_l_flat, obj_l_flat, cls_l_flat = decode_single_head_predictions(
-            raw_preds_level,  # Уже в нужной форме (B, Gh, Gw, A, 5+C)
-            anchors_this_level_np,  # Передаем якоря этого уровня
-            input_shape_detector_tuple,  # Общий входной размер
-            num_classes,
-            stride_this_level  # Страйд этого уровня
-        )
-        all_boxes_list.append(boxes_l_flat)
-        all_obj_list.append(obj_l_flat)
-        all_cls_list.append(cls_l_flat)
-
-    return tf.concat(all_boxes_list, axis=1), \
-        tf.concat(all_obj_list, axis=1), \
-        tf.concat(all_cls_list, axis=1)
-
-
-def apply_nms_and_filter(decoded_boxes_xywh_norm_flat, obj_confidence_flat, class_probs_flat,
-                         num_classes_detector, confidence_threshold, iou_threshold, max_detections):
-    # ... (код этой функции как был) ...
-    # (код этой функции как был)
-    batch_size = tf.shape(decoded_boxes_xywh_norm_flat)[0]
+def apply_nms_and_filter_generic(all_decoded_boxes_xywh_norm_list, all_obj_confidence_list, all_class_probs_list,
+                                 num_classes_detector, confidence_threshold, iou_threshold, max_detections):
+    batch_size = tf.shape(all_decoded_boxes_xywh_norm_list[0])[0]
+    flat_boxes_xywh, flat_obj_conf, flat_class_probs = [], [], []
+    for i in range(len(all_decoded_boxes_xywh_norm_list)):
+        num_total_boxes_level = tf.reduce_prod(tf.shape(all_decoded_boxes_xywh_norm_list[i])[1:-1])
+        flat_boxes_xywh.append(tf.reshape(all_decoded_boxes_xywh_norm_list[i], [batch_size, num_total_boxes_level, 4]))
+        flat_obj_conf.append(tf.reshape(all_obj_confidence_list[i], [batch_size, num_total_boxes_level, 1]))
+        flat_class_probs.append(
+            tf.reshape(all_class_probs_list[i], [batch_size, num_total_boxes_level, num_classes_detector]))
+    boxes_combined_xywh = tf.concat(flat_boxes_xywh, axis=1)
+    obj_conf_combined = tf.concat(flat_obj_conf, axis=1)
+    class_probs_combined = tf.concat(flat_class_probs, axis=1)
     boxes_ymin_xmin_ymax_xmax = tf.concat([
-        decoded_boxes_xywh_norm_flat[..., 1:2] - decoded_boxes_xywh_norm_flat[..., 3:4] / 2.0,
-        decoded_boxes_xywh_norm_flat[..., 0:1] - decoded_boxes_xywh_norm_flat[..., 2:3] / 2.0,
-        decoded_boxes_xywh_norm_flat[..., 1:2] + decoded_boxes_xywh_norm_flat[..., 3:4] / 2.0,
-        decoded_boxes_xywh_norm_flat[..., 0:1] + decoded_boxes_xywh_norm_flat[..., 2:3] / 2.0
+        boxes_combined_xywh[..., 1:2] - boxes_combined_xywh[..., 3:4] / 2.0,
+        boxes_combined_xywh[..., 0:1] - boxes_combined_xywh[..., 2:3] / 2.0,
+        boxes_combined_xywh[..., 1:2] + boxes_combined_xywh[..., 3:4] / 2.0,
+        boxes_combined_xywh[..., 0:1] + boxes_combined_xywh[..., 2:3] / 2.0
     ], axis=-1)
     boxes_ymin_xmin_ymax_xmax = tf.clip_by_value(boxes_ymin_xmin_ymax_xmax, 0.0, 1.0)
-    final_scores_per_class = obj_confidence_flat * class_probs_flat
-    max_output_per_class = max_detections // num_classes_detector if num_classes_detector > 0 else max_detections
-    if max_output_per_class == 0: max_output_per_class = 1  # Добавил эту проверку
-
-    nms_boxes, nms_scores, nms_classes, nms_valid_detections = tf.image.combined_non_max_suppression(
-        boxes=tf.expand_dims(boxes_ymin_xmin_ymax_xmax, axis=2), scores=final_scores_per_class,
-        max_output_size_per_class=max_output_per_class,
-        max_total_size=max_detections, iou_threshold=iou_threshold, score_threshold=confidence_threshold,
-        clip_boxes=False
-    )
-    return nms_boxes, nms_scores, nms_classes, nms_valid_detections
+    final_scores_per_class = obj_conf_combined * class_probs_combined
+    boxes_for_nms = tf.expand_dims(boxes_ymin_xmin_ymax_xmax, axis=2)
+    max_out_per_cls = max_detections // num_classes_detector if num_classes_detector > 0 else max_detections
+    if max_out_per_cls == 0: max_out_per_cls = 1
+    return tf.image.combined_non_max_suppression(
+        boxes=boxes_for_nms, scores=final_scores_per_class,
+        max_output_size_per_class=max_out_per_cls, max_total_size=max_detections,
+        iou_threshold=iou_threshold, score_threshold=confidence_threshold, clip_boxes=False)
 
 
 def draw_detections_on_image(image_bgr_input, boxes_norm_yminxminymaxxmax, scores, classes_ids,
-                             num_valid_detections_count, class_names_list_detector):
-    # ... (код этой функции как был) ...
-    output_image = image_bgr_input.copy();
-    original_h, original_w = output_image.shape[:2]
-    if num_valid_detections_count > 0:
-        # Убедимся, что берем правильные срезы
-        boxes_to_draw = boxes_norm_yminxminymaxxmax[0][:num_valid_detections_count]
-        scores_to_draw = scores[0][:num_valid_detections_count]
-        classes_ids_to_draw = classes_ids[0][:num_valid_detections_count].numpy().astype(int)  # было .numpy() уже
-
-        for i in range(num_valid_detections_count):
-            ymin_n, xmin_n, ymax_n, xmax_n = boxes_to_draw[i].numpy()  # Добавил .numpy()
-            xmin = int(xmin_n * original_w);
-            ymin = int(ymin_n * original_h)
-            xmax = int(xmax_n * original_w);
-            ymax = int(ymax_n * original_h)
-            class_id = classes_ids_to_draw[i];
-            score_val = scores_to_draw[i].numpy()  # Добавил .numpy()
-
+                             class_names_list_detector, original_img_w, original_img_h):
+    image_bgr_output = image_bgr_input.copy()
+    num_valid_detections_tf = tf.shape(boxes_norm_yminxminymaxxmax)[0]
+    num_valid_detections = num_valid_detections_tf.numpy() if hasattr(num_valid_detections_tf,
+                                                                      'numpy') else num_valid_detections_tf
+    for i in range(num_valid_detections):
+        if scores[i] < 0.001: continue
+        ymin_n, xmin_n, ymax_n, xmax_n = boxes_norm_yminxminymaxxmax[i]
+        xmin = int(xmin_n * original_img_w);
+        ymin = int(ymin_n * original_img_h)
+        xmax = int(xmax_n * original_img_w);
+        ymax = int(ymax_n * original_img_h)
+        class_id = int(classes_ids[i]);
+        score_val = scores[i]
+        label_text = f"Unknown({class_id}): {score_val:.2f}";
+        color = (128, 128, 128)
+        if 0 <= class_id < len(class_names_list_detector):
             label_text = f"{class_names_list_detector[class_id]}: {score_val:.2f}"
-            color = (0, 0, 255) if class_names_list_detector[class_id] == 'pit' else (0, 255, 0) if \
-            class_names_list_detector[class_id] == 'crack' else (255, 0, 0)
+            color = (0, 0, 255) if class_names_list_detector[class_id] == DET_CLASSES_LIST_PREDICT[0] else (
+            0, 255, 0)  # pit=red, crack=green
+        cv2.rectangle(image_bgr_output, (xmin, ymin), (xmax, ymax), color, 2)
+        cv2.putText(image_bgr_output, label_text, (xmin, ymin - 10 if ymin - 10 > 10 else ymin + 15),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+    return image_bgr_output
 
-            cv2.rectangle(output_image, (xmin, ymin), (xmax, ymax), color, 2)
-            cv2.putText(output_image, label_text, (xmin, ymin - 10 if ymin - 10 > 10 else ymin + 15),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
-    return output_image
 
+# --- Конец Вспомогательных Функций ---
 
-def process_image(image_path, conf_thresh, iou_thresh, max_dets):
-    # ... (код загрузки изображения и классификатора как был) ...
-    global PREDICT_CONFIG
-    if PREDICT_CONFIG is None: return "Ошибка: Конфигурация не загружена", None
-    if CLASSIFIER_MODEL is None or DETECTOR_MODEL is None: return "Ошибка: Модели не загружены", None
-    original_bgr_image = cv2.imread(image_path)
-    if original_bgr_image is None: return f"Ошибка: Не удалось прочитать {image_path}", None
+# --- Основной Пайплайн ---
+def run_complete_pipeline(image_path_arg, classifier_model_path_arg, detector_model_path_arg,
+                          output_path_arg, conf_thresh_arg, iou_thresh_arg, max_dets_arg):
+    # ... (Загрузка изображения и моделей как была) ...
+    # ... (Этап Классификации как был) ...
+    # Я скопирую эти блоки для полноты из твоего предыдущего полного кода run_prediction_pipeline.py
+    if not os.path.exists(image_path_arg): print(f"Ошибка: Изображение не найдено: {image_path_arg}"); return
+    original_bgr_image = cv2.imread(image_path_arg);
+    if original_bgr_image is None: print(f"Ошибка: Не удалось прочитать: {image_path_arg}"); return
+    original_h, original_w = original_bgr_image.shape[:2];
+    print(f"Обработка: {image_path_arg} ({original_w}x{original_h})")
+    classifier_model_full_path = _project_root_pipeline / classifier_model_path_arg
+    detector_model_full_path = _project_root_pipeline / detector_model_path_arg
+    try:
+        classifier_model = tf.keras.models.load_model(str(classifier_model_full_path), compile=False)
+        detector_model = tf.keras.models.load_model(str(detector_model_full_path),
+                                                    custom_objects=CUSTOM_OBJECTS_PIPELINE, compile=False)
+        print("Модели загружены.")
+    except Exception as e:
+        print(f"Ошибка загрузки моделей: {e}"); return
+    pipeline_result = {"image_path": image_path_arg, "status_message": "Обработка...", "is_road": None,
+                       "classifier_confidence": None, "defects": []}
+    print("\n--- Этап 1: Классификация ---");
+    cls_input = preprocess_image_for_model_tf(original_bgr_image, CLS_TARGET_IMG_HEIGHT, CLS_TARGET_IMG_WIDTH)
+    cls_pred = classifier_model.predict(cls_input, verbose=0)
+    if cls_pred.shape[-1] == 1:  # Бинарный
+        conf_road = cls_pred[0][0]
+        is_road = conf_road > 0.5
+        pipeline_result["is_road"] = bool(is_road)
+        pred_cls_name = CLASSIFIER_ROAD_CLASS_NAME_CFG if is_road else \
+        [name for name in CLS_CLASS_NAMES_FROM_PREDICT_CFG if name != CLASSIFIER_ROAD_CLASS_NAME_CFG][0]
+        pipeline_result["classifier_confidence"] = float(conf_road) if is_road else 1.0 - float(conf_road)
+    else:  # softmax
+        pred_cls_idx = np.argmax(cls_pred[0])
+        pipeline_result["classifier_confidence"] = float(cls_pred[0][pred_cls_idx])
+        pred_cls_name = CLS_CLASS_NAMES_FROM_PREDICT_CFG[pred_cls_idx]
+        pipeline_result["is_road"] = (pred_cls_name == CLASSIFIER_ROAD_CLASS_NAME_CFG)
+    print(f"Классификатор: '{pred_cls_name}' (уверенность: {pipeline_result['classifier_confidence']:.3f})")
 
-    cls_input_shape = tuple(PREDICT_CONFIG['classifier_input_shape'])
-    classifier_input_batch = preprocess_image_for_model(original_bgr_image, cls_input_shape[0], cls_input_shape[1])
-    classifier_prediction = CLASSIFIER_MODEL.predict(classifier_input_batch, verbose=0)
-    cls_road_name = PREDICT_CONFIG['classifier_road_class_name']
-    cls_names = PREDICT_CONFIG['classifier_class_names']
-    pred_cls_name = cls_names[0]  # not_road по умолчанию
-    if classifier_prediction.shape[-1] == 1:  # Sigmoid
-        pred_cls_name = cls_road_name if classifier_prediction[0][0] > 0.5 else cls_names[0]
-    else:  # Softmax
-        pred_cls_name = cls_names[np.argmax(classifier_prediction[0])]
-
-    output_image_final = original_bgr_image.copy()
-    status_message = "";
-    detected_objects_info = []
-
-    if pred_cls_name != cls_road_name:
-        status_message = "Дрон сбился с пути (обнаружена НЕ дорога)"
-        cv2.putText(output_image_final, "NOT A ROAD", (30, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+    output_image_display = original_bgr_image.copy()
+    if not pipeline_result["is_road"]:
+        pipeline_result["status_message"] = "Дрон сбился с пути (НЕ дорога)";
+        print(f"\nРЕЗУЛЬТАТ: {pipeline_result['status_message']}")
+        cv2.putText(output_image_display, "DRONE OFF COURSE", (30, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
     else:
-        status_message = "Дорога"
-        det_input_shape = tuple(PREDICT_CONFIG['detector_input_shape'])
-        detector_input_batch = preprocess_image_for_model(original_bgr_image, det_input_shape[0], det_input_shape[1])
-        raw_detector_outputs = DETECTOR_MODEL.predict(detector_input_batch, verbose=0)
+        print("\n--- Этап 2: Детекция дефектов ---")
+        detector_input_batch = preprocess_image_for_model_tf(original_bgr_image, DET_TARGET_IMG_HEIGHT,
+                                                             DET_TARGET_IMG_WIDTH)
+        raw_detector_output = detector_model.predict(detector_input_batch, verbose=0)
 
-        # Определяем тип модели (FPN или Single Head)
-        is_fpn = 'detector_fpn_levels' in PREDICT_CONFIG and PREDICT_CONFIG['detector_fpn_levels']
+        all_level_boxes_xywh, all_level_obj_conf, all_level_class_probs = [], [], []
 
-        num_classes_det = len(PREDICT_CONFIG['detector_class_names'])
+        if DETECTOR_TYPE == "fpn":
+            raw_detector_predictions_list = raw_detector_output  # Это уже список
+            print(f"  Обработка выхода FPN модели ({len(raw_detector_predictions_list)} уровней).")
+            for i_lvl, level_key in enumerate(DET_FPN_LEVELS):  # Используем DET_FPN_LEVELS из конфига
+                raw_level_preds = raw_detector_predictions_list[i_lvl]
+                level_cfg_anchors = DET_FPN_ANCHOR_CONFIGS.get(level_key)  # Используем DET_FPN_ANCHOR_CONFIGS
+                if level_cfg_anchors is None: print(f"ОШИБКА: Нет конфига якорей для FPN уровня {level_key}"); continue
 
-        if is_fpn:
-            print("  INFO: Используется декодер для FPN модели.")
-            fpn_anchor_cfgs = PREDICT_CONFIG['detector_fpn_anchor_configs']
-            # raw_detector_outputs здесь должен быть списком тензоров, если модель FPN
-            if not isinstance(raw_detector_outputs, list) or len(raw_detector_outputs) != len(
-                    PREDICT_CONFIG['detector_fpn_levels']):
-                return "Ошибка: Выход FPN модели не является списком ожидаемой длины.", None
+                level_anchors_wh = np.array(level_cfg_anchors['anchors_wh_normalized'], dtype=np.float32)
+                level_grid_h = DET_TARGET_IMG_HEIGHT // DET_FPN_STRIDES[level_key]  # Используем DET_FPN_STRIDES
+                level_grid_w = DET_TARGET_IMG_WIDTH // DET_FPN_STRIDES[level_key]
 
-            decoded_boxes_flat, obj_conf_flat, class_probs_flat = decode_fpn_predictions_list_output(
-                raw_detector_outputs,  # Список выходов
-                fpn_anchor_cfgs,
-                det_input_shape,
-                num_classes_det
-            )
+                decoded_boxes, obj_conf, class_probs = decode_single_level_predictions_generic(
+                    raw_level_preds, level_anchors_wh, level_grid_h, level_grid_w, DET_NUM_CLASSES)
+                all_level_boxes_xywh.append(decoded_boxes);
+                all_level_obj_conf.append(obj_conf);
+                all_level_class_probs.append(class_probs)
+
+        elif DETECTOR_TYPE == "single_level":
+            print(f"  Обработка выхода одноуровневой модели.")
+            decoded_boxes, obj_conf, class_probs = decode_single_level_predictions_generic(
+                raw_detector_output, SINGLE_ANCHORS_WH_NORM, SINGLE_GRID_HEIGHT, SINGLE_GRID_WIDTH, DET_NUM_CLASSES)
+            all_level_boxes_xywh.append(decoded_boxes);
+            all_level_obj_conf.append(obj_conf);
+            all_level_class_probs.append(class_probs)
+
+        if not all_level_boxes_xywh:
+            num_found_defects = 0
         else:
-            print("  INFO: Используется декодер для одноуровневой модели.")
-            anchors_v1 = PREDICT_CONFIG.get('detector_anchors_wh_normalized', [])
-            stride_v1 = PREDICT_CONFIG.get('detector_network_stride', 16)
-            if not anchors_v1: return "Ошибка: Якоря для одноуровневой модели не найдены в конфиге.", None
+            final_boxes_norm, final_scores, final_classes_ids, num_valid_dets = apply_nms_and_filter_generic(
+                all_level_boxes_xywh, all_level_obj_conf, all_level_class_probs,
+                DET_NUM_CLASSES, conf_thresh_arg, iou_thresh_arg, max_dets_arg)
+            num_found_defects = int(num_valid_dets[0].numpy())
 
-            # raw_detector_outputs здесь один тензор (B, Gh, Gw, A, 5+C)
-            decoded_boxes_flat, obj_conf_flat, class_probs_flat = decode_single_head_predictions(
-                raw_detector_outputs,
-                anchors_v1,
-                det_input_shape,
-                num_classes_det,
-                stride_v1
-            )
-
-        # ... (NMS и отрисовка как были)
-        nms_boxes, nms_scores, nms_classes, nms_valid_dets = apply_nms_and_filter(
-            decoded_boxes_flat, obj_conf_flat, class_probs_flat,
-            num_classes_det, conf_thresh, iou_thresh, max_dets)
-        num_found = int(nms_valid_dets[0].numpy())
-        if num_found > 0:
-            status_message = "Обнаружены дефекты";
-            output_image_final = draw_detections_on_image(
-                original_bgr_image, nms_boxes, nms_scores, nms_classes, num_found,
-                PREDICT_CONFIG['detector_class_names'])
-            for i in range(num_found):
-                detected_objects_info.append({
-                    "class_id": int(nms_classes[0][i].numpy()),
-                    "class_name": PREDICT_CONFIG['detector_class_names'][int(nms_classes[0][i].numpy())],
-                    "confidence": float(nms_scores[0][i].numpy()),
-                    "bbox_normalized_ymin_xmin_ymax_xmax": nms_boxes[0][i].numpy().tolist()})
+        print(f"  Найдено {num_found_defects} дефектов после NMS.")
+        if num_found_defects > 0:
+            # ... (Логика формирования JSON и рисования как была, но используем DET_CLASSES_LIST_PREDICT) ...
+            pipeline_result["status_message"] = "Обнаружены дефекты"
+            boxes_to_draw_norm = final_boxes_norm[0][:num_found_defects].numpy()
+            scores_to_draw = final_scores[0][:num_found_defects].numpy()
+            classes_ids_to_draw = final_classes_ids[0][:num_found_defects].numpy()
+            for k_idx_det in range(num_found_defects):
+                class_id_int_det = int(classes_ids_to_draw[k_idx_det])
+                pipeline_result["defects"].append({
+                    "class_id": class_id_int_det,
+                    "class_name": DET_CLASSES_LIST_PREDICT[class_id_int_det] if 0 <= class_id_int_det < len(
+                        DET_CLASSES_LIST_PREDICT) else "Unknown",
+                    "confidence": float(scores_to_draw[k_idx_det]),
+                    "bbox_normalized_ymin_xmin_ymax_xmax": [float(coord) for coord in boxes_to_draw_norm[k_idx_det]]})
+            output_image_display = draw_detections_on_image(original_bgr_image, boxes_to_draw_norm, scores_to_draw,
+                                                            classes_ids_to_draw, DET_CLASSES_LIST_PREDICT, original_w,
+                                                            original_h)  # Используем DET_CLASSES_LIST_PREDICT
+            print("РЕЗУЛЬТАТ: Обнаружены дефекты.")
         else:
-            status_message = "Нормальная дорога (дефекты не обнаружены)"
-            cv2.putText(output_image_final, "ROAD OK", (30, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+            status_msg = "Дорога в норме (дефекты не обнаружены)";
+            pipeline_result["status_message"] = status_msg
+            print(f"РЕЗУЛЬТАТ: {status_msg}");
+            cv2.putText(output_image_display, "ROAD OK", (30, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
 
-    # ... (сохранение и возврат JSON как были) ...
-    output_dir_abs = _project_root_pipeline / PREDICT_CONFIG.get("output_dir", "prediction_results")
+    # ... (Логика сохранения файла и вывода JSON как была) ...
+    final_output_path_str = "";
+    output_dir_abs = _project_root_pipeline / PREDICT_CONFIG.get("output_dir", "results_default")
     output_dir_abs.mkdir(parents=True, exist_ok=True)
-    output_image_filename = f"{Path(image_path).stem}_predicted.jpg"
-    output_image_path = str(output_dir_abs / output_image_filename)
-    cv2.imwrite(output_image_path, output_image_final)
-    response_data = {"status_message": status_message, "processed_image_path": output_image_path,
-                     "defects": detected_objects_info if detected_objects_info else "No defects or not a road"}
-    return json.dumps(response_data, indent=4, ensure_ascii=False)
+    if output_path_arg:
+        final_output_path_str = output_path_arg
+        if not os.path.isabs(final_output_path_str): final_output_path_str = str(
+            output_dir_abs / Path(final_output_path_str).name)
+    else:
+        img_path_obj = Path(image_path_arg);
+        image_name = img_path_obj.stem;
+        ext = img_path_obj.suffix
+        final_output_path_str = str(output_dir_abs / f"{image_name}_predicted_pipeline{ext}")
+    try:
+        cv2.imwrite(final_output_path_str, output_image_display)
+        print(f"\nИтоговое изображение: {final_output_path_str}")
+        pipeline_result["processed_image_path"] = final_output_path_str
+    except Exception as e_write:
+        print(f"ОШИБКА сохранения: {final_output_path_str}: {e_write}")
+    print("\n--- JSON Ответ ---");
+    print(json.dumps(pipeline_result, indent=4, ensure_ascii=False))
 
 
 if __name__ == "__main__":
-    # ... (argparse и вызов как были) ...
-    parser = argparse.ArgumentParser(description="Пайплайн детекции: Классификатор + Детектор.")
-    parser.add_argument("--image_path", type=str, required=True, help="Путь к входному изображению.")
-    parser.add_argument("--conf_thresh", type=float, help="Порог уверенности.")
-    parser.add_argument("--iou_thresh", type=float, help="Порог IoU для NMS.")
-    parser.add_argument("--max_dets", type=int, help="Макс. детекций.")
-    args = parser.parse_args()
-    if not load_pipeline_configs(): print("Крит. ошибка конфигов."); exit()
-    if not load_models_once(): print("Крит. ошибка моделей."); exit()
-    conf_run = args.conf_thresh if args.conf_thresh is not None else PREDICT_CONFIG.get("default_conf_thresh", 0.25)
-    iou_run = args.iou_thresh if args.iou_thresh is not None else PREDICT_CONFIG.get("default_iou_thresh", 0.45)
-    max_run = args.max_dets if args.max_dets is not None else PREDICT_CONFIG.get("default_max_dets", 100)
-    json_response_out = process_image(args.image_path, conf_run, iou_run, max_run)
-    print("\n--- JSON Ответ ---");
-    print(json_response_out)
+    # ... (argparse как был, но default'ы для моделей и порогов берутся из PREDICT_CONFIG) ...
+    parser = argparse.ArgumentParser(description="Пайплайн: Классификатор + Детектор.")
+    parser.add_argument("--image_path", type=str, required=True)
+    parser.add_argument("--classifier_model_path", type=str, default=PREDICT_CONFIG.get("classifier_model_path"))
+    parser.add_argument("--detector_model_path", type=str, default=PREDICT_CONFIG.get("detector_model_path"))
+    parser.add_argument("--output_path", type=str, default=None)
+    parser.add_argument("--conf_thresh", type=float, default=PREDICT_CONFIG.get("default_conf_thresh"))
+    parser.add_argument("--iou_thresh", type=float, default=PREDICT_CONFIG.get("default_iou_thresh"))
+    parser.add_argument("--max_dets", type=int, default=PREDICT_CONFIG.get("default_max_dets"))
+    args_pipeline = parser.parse_args()
+    if not args_pipeline.classifier_model_path or not (
+            _project_root_pipeline / args_pipeline.classifier_model_path).exists():
+        print(f"ОШИБКА: Модель классификатора не найдена: {args_pipeline.classifier_model_path}");
+        exit()
+    if not args_pipeline.detector_model_path or not (
+            _project_root_pipeline / args_pipeline.detector_model_path).exists():
+        print(f"ОШИБКА: Модель детектора не найдена: {args_pipeline.detector_model_path}");
+        exit()
+
+    # Проверка, что DETECTOR_TYPE корректно распознан из predict_config.yaml
+    if DETECTOR_TYPE not in ["fpn", "single_level"]:
+        print(
+            f"ОШИБКА: Некорректный detector_type ('{DETECTOR_TYPE}') в predict_config.yaml. Должен быть 'fpn' или 'single_level'.")
+        exit()
+
+    run_complete_pipeline(
+        args_pipeline.image_path, args_pipeline.classifier_model_path, args_pipeline.detector_model_path,
+        args_pipeline.output_path, args_pipeline.conf_thresh, args_pipeline.iou_thresh, args_pipeline.max_dets
+    )
