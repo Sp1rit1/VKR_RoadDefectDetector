@@ -1,7 +1,43 @@
+# src/configs/predict_config.yaml
 
 classifier_model_path: "weights/classifier_trained_model_best.keras"
-detector_model_path: "weights/RoadDefectDetector_v1_finetune_bb_best.keras"
-output_path_template: "results/{image_name}_predicted.{ext}"
-default_conf_thresh: 0.1
-default_iou_thresh: 0.5
+detector_model_path: "weights/detector_v1_best_overall.keras" # Имя твоей одноуровневой модели
+
+output_dir: "prediction_results"
+default_conf_thresh: 0.07
+default_iou_thresh: 0.45
 default_max_dets: 100
+
+classifier_input_shape: [224, 224, 3]
+classifier_class_names: ['not_road', 'road']
+classifier_road_class_name: "road"
+
+detector_input_shape: [416, 416, 3]
+detector_class_names: ["pit", "crack"]
+
+# --- Для ОДНОУРОВНЕВОЙ модели ---
+detector_anchors_wh_normalized:
+  - [0.1326, 0.0919]
+  - [0.1059, 0.3704]
+  - [0.3600, 0.1728]
+  - [0.1484, 0.8278]
+  - [0.7600, 0.2444]
+  - [0.6420, 0.6129]
+detector_num_anchors_per_location: 6
+detector_network_stride: 16 # Страйд для одноуровневой модели
+
+# --- Для FPN модели (эти ключи будут добавлены, когда будешь использовать FPN) ---
+# detector_fpn_anchor_configs:
+#   P3:
+#     anchors_wh_normalized: [[0.0619, 0.0351], ...]
+#     num_anchors_this_level: 5
+#     stride: 8
+#   P4:
+#     anchors_wh_normalized: [[0.1778, 0.1362], ...]
+#     num_anchors_this_level: 5
+#     stride: 16
+#   P5:
+#     anchors_wh_normalized: [[0.4437, 0.3374], ...]
+#     num_anchors_this_level: 4
+#     stride: 32
+# detector_fpn_levels: ['P3', 'P4', 'P5']
