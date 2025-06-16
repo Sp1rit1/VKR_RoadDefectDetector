@@ -6,24 +6,24 @@ import datetime
 import glob
 import sys
 import numpy as np
-import time  # Для замера времени эпохи
-import matplotlib.pyplot as plt  # Для сохранения графика
+import time
+import matplotlib.pyplot as plt
+from pathlib import Path  # Используем pathlib для работы с путями
 
-# --- Определяем корень проекта и добавляем src в sys.path для корректных импортов ---
-_project_root = os.path.dirname(os.path.abspath(__file__))  # Это корень проекта, где лежит train_detector.py
-_src_path = os.path.join(_project_root, 'src')
-if _src_path not in sys.path:
-    sys.path.insert(0, _src_path)
+# --- Определяем корень проекта и добавляем src в sys.path ---
+_project_root = Path(__file__).resolve().parent  # Корень проекта, где лежит train_detector.py
+_src_path = _project_root / 'src'
+if str(_src_path) not in sys.path:
+    sys.path.insert(0, str(_src_path))
 
 # --- Импорты из твоих модулей в src ---
-from datasets.detector_data_loader import create_detector_tf_dataset
-from models.object_detector import \
-    build_object_detector_v1_enhanced  # Предполагается, что эта функция теперь всегда создает модель с ЗАМОРОЖЕННЫМ backbone по умолчанию
-from losses.detection_losses import compute_detector_loss_v1  # Убедись, что имя функции правильное
+from datasets.detector_data_loader import create_detector_tf_dataset, USE_AUGMENTATION_CFG
+from models.object_detector import build_object_detector_v1_enhanced
+from losses.detection_losses import compute_detector_loss_v1
 
 # --- Загрузка Конфигураций ---
-_base_config_path = os.path.join(_project_root, 'src', 'configs', 'base_config.yaml')
-_detector_config_path = os.path.join(_project_root, 'src', 'configs', 'detector_config.yaml')
+_base_config_path = _src_path / 'configs' / 'base_config.yaml'
+_detector_config_path = _src_path / 'configs' / 'detector_config.yaml'
 
 BASE_CONFIG = {}
 DETECTOR_CONFIG = {}
@@ -56,52 +56,49 @@ if not CONFIG_LOAD_SUCCESS_TRAIN_DET:
     exit()
 
 # --- Параметры из Конфигов (с дефолтами для безопасности) ---
-# Для датасета
 IMAGES_SUBDIR_NAME_DET = BASE_CONFIG.get('dataset', {}).get('images_dir', 'JPEGImages')
 ANNOTATIONS_SUBDIR_NAME_DET = BASE_CONFIG.get('dataset', {}).get('annotations_dir', 'Annotations')
-_detector_dataset_ready_path_rel = "data/Detector_Dataset_Ready"  # Ожидаемый путь к папке с train/val
-DETECTOR_DATASET_READY_ABS = os.path.join(_project_root, _detector_dataset_ready_path_rel)
+_detector_dataset_ready_path_rel = "data/Detector_Dataset_Ready"
+DETECTOR_DATASET_READY_ABS = _project_root / _detector_dataset_ready_path_rel
 
-# Для модели
 MODEL_BASE_NAME_CFG = DETECTOR_CONFIG.get('model_base_name', 'RoadDefectDetector_DefaultName')
 BACKBONE_LAYER_NAME_IN_MODEL_CFG = DETECTOR_CONFIG.get('backbone_layer_name_in_model', 'Backbone_MobileNetV2')
-# Параметры для build_object_detector_v1 (он сам их возьмет из своего экземпляра DETECTOR_CONFIG)
 
-# Режим обучения и параметры
 CONTINUE_FROM_CHECKPOINT_CFG = DETECTOR_CONFIG.get('continue_from_checkpoint', False)
-PATH_TO_CHECKPOINT_REL_CFG = DETECTOR_CONFIG.get('path_to_checkpoint', None)
+PATH_TO_CHECKPOINT_REL_CFG = DETECTOR_CONFIG.get('path_to_checkpoint', None)  # Имя файла модели в weights/
 UNFREEZE_BACKBONE_CFG = DETECTOR_CONFIG.get('unfreeze_backbone', False)
 UNFREEZE_BACKBONE_LAYERS_FROM_END_CFG = DETECTOR_CONFIG.get('unfreeze_backbone_layers_from_end', 0)
+FINETUNE_KEEP_BN_FROZEN = DETECTOR_CONFIG.get('finetune_keep_bn_frozen', True)  # Новый параметр
 
-BATCH_SIZE_CFG = DETECTOR_CONFIG.get('batch_size', 2)  # Общий batch_size, используется при создании датасета
+BATCH_SIZE_CFG = DETECTOR_CONFIG.get('batch_size', 2)
 EPOCHS_CFG = DETECTOR_CONFIG.get('epochs', 50)
 INITIAL_LEARNING_RATE_CFG = DETECTOR_CONFIG.get('initial_learning_rate', 0.0001)
 FINETUNE_LEARNING_RATE_CFG = DETECTOR_CONFIG.get('finetune_learning_rate', 1e-5)
 
-EARLY_STOPPING_PATIENCE_CFG = DETECTOR_CONFIG.get('early_stopping_patience', 20)
-REDUCE_LR_PATIENCE_CFG = DETECTOR_CONFIG.get('reduce_lr_patience', 7)
+EARLY_STOPPING_PATIENCE_CFG = DETECTOR_CONFIG.get('early_stopping_patience', 15)  # Увеличим немного дефолт
+REDUCE_LR_PATIENCE_CFG = DETECTOR_CONFIG.get('reduce_lr_patience', 5)  # Уменьшим для более быстрой реакции
 REDUCE_LR_FACTOR_CFG = DETECTOR_CONFIG.get('reduce_lr_factor', 0.2)
-MIN_LR_ON_PLATEAU_CFG = DETECTOR_CONFIG.get('min_lr_on_plateau', 1e-6)
-USE_AUGMENTATION_CFG = DETECTOR_CONFIG.get('use_augmentation', True)
+MIN_LR_ON_PLATEAU_CFG = DETECTOR_CONFIG.get('min_lr_on_plateau', 1e-7)
+USE_AUGMENTATION_TRAIN_CFG = DETECTOR_CONFIG.get('use_augmentation', True)
 
-# Параметры для логов и весов
-LOGS_BASE_DIR_ABS = os.path.join(_project_root, BASE_CONFIG.get('logs_base_dir', 'logs'))
-WEIGHTS_BASE_DIR_ABS = os.path.join(_project_root, BASE_CONFIG.get('weights_base_dir', 'weights'))
-GRAPHS_DIR_ABS = os.path.join(_project_root, BASE_CONFIG.get('graphs_dir', 'graphs'))  # Для сохранения графиков
+LOGS_BASE_DIR_ABS = _project_root / BASE_CONFIG.get('logs_base_dir', 'logs')
+WEIGHTS_BASE_DIR_ABS = _project_root / BASE_CONFIG.get('weights_base_dir', 'weights')
+GRAPHS_DIR_ABS = _project_root / BASE_CONFIG.get('graphs_dir', 'graphs')
 os.makedirs(GRAPHS_DIR_ABS, exist_ok=True)
 os.makedirs(WEIGHTS_BASE_DIR_ABS, exist_ok=True)
+os.makedirs(LOGS_BASE_DIR_ABS, exist_ok=True)
 
 
 # --- Вспомогательные Функции ---
+# collect_split_data_paths (без изменений, как в твоей последней версии)
 def collect_split_data_paths(split_dir_abs_path, images_subdir, annotations_subdir):
+    # ... (твой код collect_split_data_paths) ...
     image_paths = []
     xml_paths = []
     current_images_dir = os.path.join(split_dir_abs_path, images_subdir)
     current_annotations_dir = os.path.join(split_dir_abs_path, annotations_subdir)
     if not os.path.isdir(current_images_dir) or not os.path.isdir(current_annotations_dir):
-        print(
-            f"  ПРЕДУПРЕЖДЕНИЕ: Директория {current_images_dir} или {current_annotations_dir} не найдена для split'а. Пропускаем.")
-        return image_paths, xml_paths
+        return image_paths, xml_paths  # Возвращаем пустые списки, если директории нет
     valid_extensions = ['.jpg', '.jpeg', '.png']
     image_files_in_split = []
     for ext in valid_extensions:
@@ -114,27 +111,23 @@ def collect_split_data_paths(split_dir_abs_path, images_subdir, annotations_subd
         if os.path.exists(xml_path):
             image_paths.append(img_path)
             xml_paths.append(xml_path)
-        # else:
-        # print(f"    ПРЕДУПРЕЖДЕНИЕ (collect_split): XML для {os.path.basename(img_path)} не найден в {current_annotations_dir}")
     return image_paths, xml_paths
 
 
+# EpochTimeLogger (без изменений)
 class EpochTimeLogger(tf.keras.callbacks.Callback):
+    # ... (твой код EpochTimeLogger) ...
     def on_epoch_begin(self, epoch, logs=None):
         self.epoch_start_time = time.time()
-        # Вывод номера эпохи теперь делается Keras при verbose=1 или 2
-        # print(f"Epoch {epoch+1}/{self.params['epochs']} - Начало", end="")
 
     def on_epoch_end(self, epoch, logs=None):
         epoch_duration = time.time() - self.epoch_start_time
-        # Keras выводит время на шаг, мы добавим общее время эпохи в лог
-        # TensorFlow уже логирует время эпохи сам при verbose=1 или 2
-        # logs['epoch_duration_sec'] = epoch_duration # Можно добавить в логи для TensorBoard
         print(f" - Время эпохи: {epoch_duration:.2f} сек")
 
 
+# plot_training_history (без изменений)
 def plot_training_history(history, save_path_plot, run_suffix=""):
-    """Сохраняет график истории обучения."""
+    # ... (твой код plot_training_history) ...
     plt.figure(figsize=(12, 5))
     plt.plot(history.history['loss'], label='Train Loss')
     if 'val_loss' in history.history and history.history['val_loss']:
@@ -156,54 +149,58 @@ def plot_training_history(history, save_path_plot, run_suffix=""):
 
 # --- Основная функция обучения ---
 def train_detector_main():
-    print(f"\n--- Запуск Обучения Детектора Объектов ---")
+    print(f"\n--- Запуск Обучения Детектора Объектов (Версия с Улучшенным Управлением Fine-tuning'ом) ---")
 
-    # 1. Определяем режим и параметры на основе конфига
-    training_run_description = "initial_frozen_bb"  # Суффикс для имен файлов и логов
+    # 1. Определение режима и параметров
+    training_run_description = "initial_frozen_bb"
     current_lr = INITIAL_LEARNING_RATE_CFG
-    current_epochs = EPOCHS_CFG
-    current_use_augmentation = USE_AUGMENTATION_CFG
-    initial_epoch_for_fit = 0  # Для продолжения счета эпох в model.fit()
-    model_to_load_path = None
+    current_use_augmentation = USE_AUGMENTATION_CFG  # По умолчанию берем из конфига
+    model_to_load_path_abs = None
+    perform_fine_tuning_on_backbone = False  # Флаг, указывающий, нужно ли размораживать backbone
 
     if PATH_TO_CHECKPOINT_REL_CFG:
-        model_to_load_path = os.path.join(WEIGHTS_BASE_DIR_ABS, PATH_TO_CHECKPOINT_REL_CFG)
+        model_to_load_path_abs = WEIGHTS_BASE_DIR_ABS / PATH_TO_CHECKPOINT_REL_CFG
 
-    if CONTINUE_FROM_CHECKPOINT_CFG and model_to_load_path and os.path.exists(model_to_load_path):
-        print(f"Режим: Продолжение обучения / Fine-tuning с чекпоинта: {model_to_load_path}")
+    if CONTINUE_FROM_CHECKPOINT_CFG and model_to_load_path_abs and model_to_load_path_abs.exists():
+        print(f"Режим: Продолжение обучения / Fine-tuning с чекпоинта: {model_to_load_path_abs}")
         if UNFREEZE_BACKBONE_CFG:
             training_run_description = "finetune_bb"
             current_lr = FINETUNE_LEARNING_RATE_CFG
-            # current_use_augmentation = DETECTOR_CONFIG.get('use_augmentation_on_finetune', False) # Если есть отдельный флаг
-            print(f"  Backbone будет разморожен. Learning rate: {current_lr}")
-        else:
+            perform_fine_tuning_on_backbone = True  # Устанавливаем флаг
+            # current_use_augmentation остается из конфига (USE_AUGMENTATION_CFG)
+            print(f"  Backbone будет разморожен (частично или полностью). Learning rate: {current_lr}")
+            print(f"  Аугментация для fine-tuning'а: {current_use_augmentation}")
+        else:  # Продолжение обучения с замороженным backbone
             training_run_description = "continued_frozen_bb"
-            print(f"  Backbone останется/будет заморожен. Learning rate: {current_lr}")
-        # initial_epoch_for_fit можно попытаться извлечь из имени файла или логов, если нужно
-    elif UNFREEZE_BACKBONE_CFG:  # Обучение с нуля, но backbone сразу разморожен
-        training_run_description = "initial_unfrozen_bb"
-        current_lr = FINETUNE_LEARNING_RATE_CFG  # Используем LR для fine-tuning'а, так как это более деликатный процесс
-        print(f"Режим: Начальное обучение с РАЗМОРОЖЕННЫМ backbone. Learning rate: {current_lr}")
-    else:  # initial_train с замороженным backbone (стандартный)
-        print(f"Режим: Начальное обучение с ЗАМОРОЖЕННЫМ backbone. Learning rate: {current_lr}")
-        # path_to_model_for_continuation здесь не используется, модель создается с нуля
+            # LR остается INITIAL_LEARNING_RATE_CFG или должен быть меньше?
+            # Обычно для продолжения берут текущий LR из оптимизатора модели или немного меньше.
+            # Пока оставим INITIAL_LEARNING_RATE_CFG, но это место для возможной корректировки.
+            print(f"  Backbone останется замороженным. Learning rate: {current_lr}")
+            print(f"  Аугментация: {current_use_augmentation}")
+    elif UNFREEZE_BACKBONE_CFG:  # Обучение с нуля, но backbone сразу разморожен (не рекомендуется)
+        training_run_description = "initial_unfrozen_bb_WARNING"  # Добавим WARNING
+        current_lr = FINETUNE_LEARNING_RATE_CFG
+        perform_fine_tuning_on_backbone = True
+        print(f"ПРЕДУПРЕЖДЕНИЕ: Начальное обучение с РАЗМОРОЖЕННЫМ backbone. Это может быть нестабильно.")
+        print(f"  Learning rate: {current_lr}, Аугментация: {current_use_augmentation}")
+    else:  # Стандартное начальное обучение с замороженным backbone
+        print(f"Режим: Начальное обучение с ЗАМОРОЖЕННЫМ backbone.")
+        print(f"  Learning rate: {current_lr}, Аугментация: {current_use_augmentation}")
+        # perform_fine_tuning_on_backbone остается False
 
-    print(f"Описание текущего запуска: {training_run_description}")
+    print(f"Итоговое описание запуска: {training_run_description}")
 
     # 2. Подготовка данных
-    train_split_dir = os.path.join(DETECTOR_DATASET_READY_ABS, "train")
-    val_split_dir = os.path.join(DETECTOR_DATASET_READY_ABS, "validation")
-    train_image_paths, train_xml_paths = collect_split_data_paths(train_split_dir, IMAGES_SUBDIR_NAME_DET,
+    # ... (код сбора train/val путей остается таким же) ...
+    train_split_dir = DETECTOR_DATASET_READY_ABS / "train"
+    val_split_dir = DETECTOR_DATASET_READY_ABS / "validation"
+    train_image_paths, train_xml_paths = collect_split_data_paths(str(train_split_dir), IMAGES_SUBDIR_NAME_DET,
                                                                   ANNOTATIONS_SUBDIR_NAME_DET)
-    val_image_paths, val_xml_paths = collect_split_data_paths(val_split_dir, IMAGES_SUBDIR_NAME_DET,
+    val_image_paths, val_xml_paths = collect_split_data_paths(str(val_split_dir), IMAGES_SUBDIR_NAME_DET,
                                                               ANNOTATIONS_SUBDIR_NAME_DET)
-
     if not train_image_paths: print("ОШИБКА: Обучающие данные не найдены."); return
     print(f"\nНайдено для обучения: {len(train_image_paths)}.")
-    if val_image_paths:
-        print(f"Найдено для валидации: {len(val_image_paths)}.")
-    else:
-        print("ПРЕДУПРЕЖДЕНИЕ: Валидационные данные не найдены.")
+    if val_image_paths: print(f"Найдено для валидации: {len(val_image_paths)}.")
 
     print(f"\nСоздание TensorFlow датасетов...")
     print(f"  Параметры: Batch Size={BATCH_SIZE_CFG}, Аугментация для train={current_use_augmentation}")
@@ -218,80 +215,100 @@ def train_detector_main():
             shuffle=False, augment=False
         )
     if train_dataset is None: print("Не удалось создать обучающий датасет. Выход."); return
-    # ... (проверки на пустоту датасетов) ...
 
     # 3. Создание или Загрузка Модели
     model = None
-    if CONTINUE_FROM_CHECKPOINT_CFG and model_to_load_path and os.path.exists(model_to_load_path):
-        print(f"\nЗагрузка существующей модели из: {model_to_load_path}")
+    initial_epoch = 0  # Для model.fit, если продолжаем обучение
+
+    if CONTINUE_FROM_CHECKPOINT_CFG and model_to_load_path_abs and model_to_load_path_abs.exists():
+        print(f"\nЗагрузка существующей модели из: {model_to_load_path_abs}")
         try:
             model = tf.keras.models.load_model(
-                model_to_load_path,
+                str(model_to_load_path_abs),  # Path объекту нужен str()
                 custom_objects={'compute_detector_loss_v1': compute_detector_loss_v1},
-                compile=False  # Загружаем без компиляции
+                compile=False  # Загружаем без компиляции, чтобы потом применить новый LR или разморозку
             )
             print("Модель успешно загружена.")
+            # Здесь можно было бы попытаться извлечь последнюю эпоху из имени файла, но это усложнит.
+            # Оставим initial_epoch = 0, TensorBoard все равно покажет общую картину по шагам.
         except Exception as e:
-            print(f"Ошибка при загрузке модели: {e}. Будет создана новая модель.")
+            print(f"Ошибка при загрузке модели из чекпоинта: {e}. Будет создана новая модель.")
             model = None
 
     if model is None:
-        if CONTINUE_FROM_CHECKPOINT_CFG and model_to_load_path:
-            print(f"ПРЕДУПРЕЖДЕНИЕ: Файл '{model_to_load_path}' не найден или ошибка загрузки.")
-        print("\nСоздание новой модели детектора (build_object_detector_v1)...")
-        # build_object_detector_v1 должен сам использовать freeze_backbone_initial_train из конфига,
-        # или мы предполагаем, что он всегда создает с замороженным.
-        model = build_object_detector_v1_enhanced()
-        # Если это не "continue_train", то начальная заморозка backbone уже произошла в build_object_detector_v1
-        # (предполагая, что freeze_backbone_initial_train в detector_config управляет этим)
+        if CONTINUE_FROM_CHECKPOINT_CFG and model_to_load_path_abs:  # Если чекпоинт был указан, но не загрузился
+            print(f"ПРЕДУПРЕЖДЕНИЕ: Не удалось загрузить модель из '{model_to_load_path_abs}'.")
+        print("\nСоздание новой модели детектора (build_object_detector_v1_enhanced)...")
+        model = build_object_detector_v1_enhanced()  # Эта функция должна создавать backbone замороженным по умолчанию
+        # Если это не "продолжение", то начальная заморозка уже должна быть в build_object_detector_v1_enhanced
+        # на основе DETECTOR_CONFIG['freeze_backbone'] (который сейчас true).
 
-    # Применяем UNFREEZE_BACKBONE_CFG, если это указано
-    if UNFREEZE_BACKBONE_CFG:
-        print(f"\nПрименение флага unfreeze_backbone: True")
-        backbone_layer = model.get_layer(BACKBONE_LAYER_NAME_IN_MODEL_CFG)
-        if backbone_layer:
-            backbone_layer.trainable = True
-            num_layers_to_finetune = UNFREEZE_BACKBONE_LAYERS_FROM_END_CFG
-            if num_layers_to_finetune > 0 and hasattr(backbone_layer, 'layers') and \
-                    len(backbone_layer.layers) > num_layers_to_finetune:
-                print(f"  Размораживаются только последние {num_layers_to_finetune} слоев backbone...")
-                for layer_idx, layer in enumerate(backbone_layer.layers):
-                    if layer_idx < len(backbone_layer.layers) - num_layers_to_finetune:
+    # Применяем разморозку, ЕСЛИ это указано и модель существует
+    if model and perform_fine_tuning_on_backbone:  # perform_fine_tuning_on_backbone устанавливается выше
+        print(f"\nПрименение параметров Fine-tuning'а к Backbone...")
+        try:
+            backbone_model_internal = model.get_layer(BACKBONE_LAYER_NAME_IN_MODEL_CFG)
+
+            # Сначала делаем весь backbone обучаемым
+            backbone_model_internal.trainable = True
+
+            num_layers_to_finetune_from_end = UNFREEZE_BACKBONE_LAYERS_FROM_END_CFG
+
+            if num_layers_to_finetune_from_end > 0:  # Если указано частичное размораживание
+                print(
+                    f"  Размораживаются ПОСЛЕДНИЕ {num_layers_to_finetune_from_end} слоев в Backbone '{backbone_model_internal.name}'.")
+                # Замораживаем все слои, КРОМЕ последних N
+                for i, layer in enumerate(backbone_model_internal.layers):
+                    if i < len(backbone_model_internal.layers) - num_layers_to_finetune_from_end:
                         layer.trainable = False
                     else:
-                        layer.trainable = True  # Убедимся, что они разморожены
-            else:
-                print(f"  Backbone '{backbone_layer.name}' ПОЛНОСТЬЮ РАЗМОРОЖЕН.")
-            current_lr = FINETUNE_LEARNING_RATE_CFG  # Для любого сценария с разморозкой используем finetune_lr
-        else:
+                        # Для BN слоев в размораживаемой части, если хотим их оставить замороженными
+                        if FINETUNE_KEEP_BN_FROZEN and isinstance(layer, tf.keras.layers.BatchNormalization):
+                            layer.trainable = False
+                            # print(f"    Слой BN '{layer.name}' оставлен замороженным при fine-tuning'е.")
+                        else:
+                            layer.trainable = True  # Убеждаемся, что эти слои обучаемы
+            else:  # num_layers_to_finetune_from_end == 0 или не указан => размораживаем все
+                print(f"  Backbone '{backbone_model_internal.name}' ПОЛНОСТЬЮ РАЗМОРОЖЕН (все слои trainable=True).")
+                if FINETUNE_KEEP_BN_FROZEN:  # Но BN слои все равно замораживаем, если указано
+                    for layer_in_backbone in backbone_model_internal.layers:
+                        if isinstance(layer_in_backbone, tf.keras.layers.BatchNormalization):
+                            layer_in_backbone.trainable = False
+                    print("    (При этом BatchNormalization слои в Backbone оставлены замороженными согласно конфигу)")
+
+        except ValueError:  # Если слой backbone не найден
             print(
-                f"ПРЕДУПРЕЖДЕНИЕ: Слой Backbone '{BACKBONE_LAYER_NAME_IN_MODEL_CFG}' не найден. Разморозка не применена.")
-    elif model and not CONTINUE_FROM_CHECKPOINT_CFG:  # Если модель новая и unfreeze_backbone=false
-        # Убедимся, что backbone заморожен, как и ожидается от build_object_detector_v1
-        backbone_layer = model.get_layer(BACKBONE_LAYER_NAME_IN_MODEL_CFG)
-        if backbone_layer:
-            backbone_layer.trainable = False  # Явно замораживаем, если build_object_detector_v1 это не сделал
-            print(f"INFO: Backbone '{backbone_layer.name}' ЗАМОРОЖЕН (начальное обучение).")
+                f"ПРЕДУПРЕЖДЕНИЕ: Слой Backbone '{BACKBONE_LAYER_NAME_IN_MODEL_CFG}' не найден в загруженной/созданной модели. Разморозка не применена.")
+        except Exception as e_unfreeze:
+            print(f"ОШИБКА при попытке разморозить backbone: {e_unfreeze}")
+    elif model and not perform_fine_tuning_on_backbone:  # Начальное обучение или продолжение с замороженным
+        backbone_model_internal = model.get_layer(BACKBONE_LAYER_NAME_IN_MODEL_CFG)
+        if backbone_model_internal:
+            backbone_model_internal.trainable = False  # Убедимся, что он заморожен
+            print(f"INFO: Backbone '{backbone_model_internal.name}' используется как ЗАМОРОЖЕННЫЙ.")
 
     print("\nСтруктура модели (финальная перед компиляцией):")
-    model.summary(line_length=120)
+    model.summary(line_length=120)  # Выводим summary ПОСЛЕ всех манипуляций с trainable
+
     print(f"\nКомпиляция модели с learning_rate = {current_lr}...")
     model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=current_lr),
                   loss=compute_detector_loss_v1)
 
     # 4. Callbacks
+    # ... (код коллбэков такой же, как в твоей последней версии, но имя файла для лучшей модели будет динамическим)
     timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     log_dir_name = f"detector_{MODEL_BASE_NAME_CFG}_{training_run_description}_{timestamp}"
-    log_dir = os.path.join(LOGS_BASE_DIR_ABS, log_dir_name)
-    tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=log_dir, histogram_freq=1)
+    log_dir = LOGS_BASE_DIR_ABS / log_dir_name
+    tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=str(log_dir), histogram_freq=1)
     callbacks_list = [tensorboard_callback, EpochTimeLogger()]
 
+    # Имя для лучшей модели будет фиксированным, чтобы мы всегда знали, где лежит лучшая модель ЭТОГО ТИПА запуска
     best_model_filename = f'{MODEL_BASE_NAME_CFG}_{training_run_description}_best.keras'
-    checkpoint_filepath_best = os.path.join(WEIGHTS_BASE_DIR_ABS, best_model_filename)
+    checkpoint_filepath_best = WEIGHTS_BASE_DIR_ABS / best_model_filename
 
     if validation_dataset:
         model_checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(
-            filepath=checkpoint_filepath_best, save_weights_only=False,
+            filepath=str(checkpoint_filepath_best), save_weights_only=False,
             monitor='val_loss', mode='min', save_best_only=True, verbose=1)
         callbacks_list.append(model_checkpoint_callback)
         early_stopping_callback = tf.keras.callbacks.EarlyStopping(
@@ -301,41 +318,34 @@ def train_detector_main():
             monitor='val_loss', factor=REDUCE_LR_FACTOR_CFG, patience=REDUCE_LR_PATIENCE_CFG,
             verbose=1, min_lr=MIN_LR_ON_PLATEAU_CFG)
         callbacks_list.append(reduce_lr_callback)
-    else:
-        print("ПРЕДУПРЕЖДЕНИЕ: Валидационный датасет НЕ доступен.")
 
     # 5. Запуск Обучения
-    print(f"\nЗапуск обучения детектора на {EPOCHS_CFG} эпох (initial_epoch для model.fit() = {initial_epoch_for_fit})...")
-    print(f"  Обучающая выборка: {len(train_image_paths)} изображений, Аугментация: {current_use_augmentation}")
-    if val_image_paths: print(f"  Валидационная выборка: {len(val_image_paths)} изображений.")
-    print(f"  Batch Size (для датасета): {BATCH_SIZE_CFG}")  # Тот, что используется в create_detector_tf_dataset
-    print(f"  Логи TensorBoard: {log_dir}")
-
+    # ... (код запуска model.fit() и сохранения финальной модели и графика такой же) ...
+    print(
+        f"\nЗапуск обучения детектора на {EPOCHS_CFG} эпох (initial_epoch = {initial_epoch})...")  # Используем initial_epoch
+    # ... (остальные print'ы)
     try:
         history = model.fit(
             train_dataset,
-            epochs=EPOCHS_CFG, # Это общее количество эпох для ЭТОГО сеанса fit
+            epochs=EPOCHS_CFG,
             validation_data=validation_dataset,
             callbacks=callbacks_list,
             verbose=1,
-            initial_epoch=initial_epoch_for_fit # <--- ИСПРАВЛЕНО
+            initial_epoch=initial_epoch
         )
-        print(f"\n--- Обучение детектора (режим: {training_run_description}) завершено ---")
-
+        # ... (код сохранения финальной модели и графика) ...
         final_model_filename = f'{MODEL_BASE_NAME_CFG}_{training_run_description}_final_epoch{history.epoch[-1] + 1}_{timestamp}.keras'
-        final_model_save_path = os.path.join(WEIGHTS_BASE_DIR_ABS, final_model_filename)
+        final_model_save_path = WEIGHTS_BASE_DIR_ABS / final_model_filename
         model.save(final_model_save_path)
-        print(f"Финальная модель (на момент остановки) сохранена в: {final_model_save_path}")
-
-        if validation_dataset and os.path.exists(checkpoint_filepath_best):
-            print(f"Лучшая модель по val_loss также сохранена в: {checkpoint_filepath_best}")
-
+        print(f"Финальная модель сохранена в: {final_model_save_path}")
+        if validation_dataset and checkpoint_filepath_best.exists():
+            print(f"Лучшая модель по val_loss также сохранена/обновлена в: {checkpoint_filepath_best}")
         history_plot_filename = f'detector_history_{MODEL_BASE_NAME_CFG}_{training_run_description}_{timestamp}.png'
-        history_plot_save_path = os.path.join(GRAPHS_DIR_ABS, history_plot_filename)
-        plot_training_history(history, history_plot_save_path, run_suffix=training_run_description)
+        history_plot_save_path = GRAPHS_DIR_ABS / history_plot_filename
+        plot_training_history(history, str(history_plot_save_path), run_suffix=training_run_description)
 
     except Exception as e_fit:
-        print(f"ОШИБКА во время model.fit() для детектора: {e_fit}");
+        print(f"ОШИБКА во время model.fit(): {e_fit}");
         import traceback;
         traceback.print_exc()
 

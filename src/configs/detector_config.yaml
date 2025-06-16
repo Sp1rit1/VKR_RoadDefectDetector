@@ -1,73 +1,77 @@
 # src/configs/detector_config.yaml
 
 # --- Общие Параметры Модели Детектора ---
-model_base_name: "RoadDefectDetector_v1"    # Базовое имя для файлов моделей и логов
-backbone_name: "MobileNetV2"                # Какую pre-trained модель использовать как основу
-input_shape: [416, 416, 3]               # Входной размер изображений для детектора
-backbone_layer_name_in_model: "Backbone_MobileNetV2" # Имя слоя backbone в модели (проверь model.summary())
+model_base_name: "RoadDefectDetector_v2_FPN" # Изменили имя, чтобы отразить новую архитектуру
+backbone_name: "MobileNetV2"                 # Можем оставить или рассмотреть EfficientNetB0 позже
+input_shape: [416, 416, 3]                # Входной размер изображений для детектора
+backbone_layer_name_in_model: "Backbone_MobileNetV2" # Имя слоя backbone, если модель детектора будет содержать его как вложенную модель
 
-# Параметры для "головы" предсказаний (используются в build_object_detector_v1_enhanced)
-head_body_conv_filters: 256                 # Фильтры в первом слое "тела" головы
-head_body_depth: 2                          # Количество Conv-BN-LeakyReLU блоков в "теле" головы
-leaky_relu_alpha: 0.1                       # Alpha для LeakyReLU
-l2_regularization: 0.0005                   # Коэффициент L2 регуляризации
+# Параметры "тела" и "голов" FPN (будут использоваться в build_object_detector_v2_fpn)
+fpn_filters: 128                            # Количество фильтров в слоях FPN и в начале голов (было 256, можно уменьшить для начала)
+head_depth: 2                               # Количество Conv-BN-LeakyReLU блоков в КАЖДОЙ голове FPN (было head_body_depth)
+head_conv_filters: 128                      # Фильтры в свертках голов (может быть = fpn_filters)
+leaky_relu_alpha: 0.1
+l2_regularization: 0.0005                   # Если используется
 
-# --- Параметры Классов и Якорей ---
+# --- Параметры Классов ---
 classes: ["pit", "crack"]                  # pit:0, crack:1
 num_classes: 2
-# ЗАМЕНИ ЭТИ ЯКОРЯ на те, что получишь от K-Means кластеризации на твоем полном датасете!
-anchors_wh_normalized:
-  - [0.1326, 0.0919]
-  - [0.1059, 0.3704]
-  - [0.3600, 0.1728]
-  - [0.1484, 0.8278]
-  - [0.7600, 0.2444]
-  - [0.6420, 0.6129]
-num_anchors_per_location: 6
+
+# --- Параметры Якорей для FPN ---
+# Якоря теперь определяются для каждого уровня FPN отдельно.
+# Эти значения НУЖНО БУДЕТ ПОЛУЧИТЬ ИЗ K-MEANS на твоем полном датасете (Шаг 1 Дня 2 нового плана).
+# Пока что это ЗАГЛУШКИ - очень примерные и, скорее всего, неоптимальные.
+# num_anchors_per_location будет определяться количеством якорей на каждом уровне.
+# Для простоты, сделаем по 3 якоря на каждом уровне.
+fpn_anchor_configs:
+  P3: # stride 8 (для входа 416x416, карта признаков ~52x52) - для мелких объектов
+    anchors_wh_normalized: # [width, height]
+      - [0.03, 0.03]    # Маленький квадратный
+      - [0.05, 0.025]   # Маленький горизонтальный
+      - [0.025, 0.05]   # Маленький вертикальный
+    num_anchors_this_level: 3
+  P4: # stride 16 (карта признаков ~26x26) - для средних объектов
+    anchors_wh_normalized:
+      - [0.08, 0.08]
+      - [0.12, 0.06]
+      - [0.06, 0.12]
+    num_anchors_this_level: 3
+  P5: # stride 32 (карта признаков ~13x13) - для крупных объектов
+    anchors_wh_normalized:
+      - [0.2, 0.2]
+      - [0.3, 0.15]
+      - [0.15, 0.3]
+    num_anchors_this_level: 3
 
 # --- Режим и Параметры Обучения ---
-# Устанавливаем режим для FINE-TUNING'а
-continue_from_checkpoint: true        # <<<--- Устанавливаем в true, чтобы загрузить модель
-path_to_checkpoint: "detector_v1_best_overall.keras" # <<<--- ЗАМЕНИ НА ИМЯ ТВОЕЙ ЛУЧШЕЙ МОДЕЛИ
-                                       # (например, detector_v1_best_overall.keras или как она у тебя называется
-                                       # после начального обучения с замороженным backbone)
+# НАЧИНАЕМ ОБУЧЕНИЕ НОВОЙ МОДЕЛИ FPN С НУЛЯ (с замороженным backbone)
+continue_from_checkpoint: false
+path_to_checkpoint: "" # Не используется
 
-unfreeze_backbone: true               # <<<--- Устанавливаем в true, чтобы разморозить backbone
+unfreeze_backbone: false               # <<<--- ВАЖНО: FALSE! Начинаем с замороженного backbone
+finetune_keep_bn_frozen: true
+unfreeze_backbone_layers_from_end: 0
 
-# Параметры для разморозки backbone (если unfreeze_backbone: true)
-# 0 - разморозить весь backbone. >0 - количество слоев с КОНЦА backbone, которые будут обучаться.
-unfreeze_backbone_layers_from_end: 0  # <<<--- Размораживаем весь backbone
-
-# Общие параметры обучения (эпохи для текущего сеанса)
-batch_size: 2                         # Для fine-tuning'а часто уменьшают batch_size из-за увеличения потребления памяти
-epochs: 100                            # Количество эпох для fine-tuning'а (может быть меньше, чем для начального)
+batch_size: 4                          # Уменьшим для начала, т.к. FPN модель может быть тяжелее
+epochs: 150                            # Количество эпох для начального обучения FPN
 
 # Learning Rates
-initial_learning_rate: 0.0001         # Этот LR будет использован, если continue_from_checkpoint=false
-finetune_learning_rate: 0.00001     # (1e-5) <<<--- Этот LR будет использован, т.к. unfreeze_backbone: true
+initial_learning_rate: 0.0005        # (5e-4) Для FPN можно попробовать чуть выше начальный LR
+finetune_learning_rate: 0.00001      # (1e-5) Для будущего fine-tuning'а
 
 # Параметры Callbacks
-early_stopping_patience: 15           # Терпение для EarlyStopping при fine-tuning'е (можно сделать чуть меньше)
-reduce_lr_patience: 5                # Терпение для ReduceLROnPlateau при fine-tuning'е
+early_stopping_patience: 20           # Можно увеличить немного
+reduce_lr_patience: 7                 # Можно увеличить немного
 reduce_lr_factor: 0.2
-min_lr_on_plateau: 0.0000001 # (1e-7) Можно еще ниже для fine-tuning'а
+min_lr_on_plateau: 0.0000001 # (1e-7)
 
 # Аугментация
-use_augmentation: false # <<<--- ЧАСТО ПРИ FINE-TUNING'Е АУГМЕНТАЦИЮ ДЕЛАЮТ МЕНЕЕ АГРЕССИВНОЙ ИЛИ ВЫКЛЮЧАЮТ
-                        # Если хочешь использовать, установи в true и убедись, что
-                        # train_detector.py это учитывает для fine-tuning'а
-                        # (в текущей версии train_detector.py флаг current_use_augmentation
-                        # будет равен этому значению, если мы не в initial_train без unfreeze)
+use_augmentation: true
 
-# --- Параметры Функции Потерь ---
+# --- Параметры Функции Потерь (остаются похожими, но будут применяться к каждому выходу FPN) ---
 loss_weights:
   coordinates: 1.5
-  objectness: 1.0
-  no_object: 0.7
+  objectness: 1.0  # Общий вес для objectness
+  no_object: 0.5   # Общий вес для no_object (можно будет сделать специфичным для уровня)
   classification: 1.0
 
-# --- Параметры для Инференса ---
-predict_params:
-  confidence_threshold: 0.25 # Подбери после fine-tuning'а
-  iou_threshold: 0.45        # Подбери после fine-tuning'а
-  max_detections: 100
