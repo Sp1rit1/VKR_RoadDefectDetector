@@ -1,71 +1,40 @@
 # src/configs/detector_config.yaml
 
-# --- Общие Параметры, которые МОГУТ использоваться разными моделями, если не переопределены ниже ---
-# Эти параметры в основном для ОБУЧЕНИЯ, predict_pipeline будет брать input_shape и classes из predict_config.yaml,
-# но они здесь для полноты и если какой-то скрипт обучения будет на них ссылаться как на общие.
-# Для инференса predict_pipeline важнее секции single_level_detector_params и fpn_detector_params.
-
-# input_shape: [416, 416, 3]   # Общий входной размер по умолчанию
-# classes: ["pit", "crack"]      # Общий список классов по умолчанию
-# num_classes: 2                 # Общее количество классов по умолчанию
-# backbone_name: "MobileNetV2" # Общий backbone по умолчанию
-
-# --- Параметры для ОДНОУРОВНЕВОЙ модели детектора (например, твоя v1_enhanced) ---
-single_level_detector_params:
-  model_name_prefix: "RoadDefectDetector_v1" # Используется в train_detector для имен логов/моделей
-  backbone_name: "MobileNetV2"               # Backbone, использованный для этой v1 модели
-  input_shape: [416, 416, 3]              # Входной размер, на котором обучалась v1
-  classes: ["pit", "crack"]                 # Классы, на которых обучалась v1 (pit:0, crack:1)
-  num_classes: 2                          # Количество этих классов
-
-  network_stride: 16 # Страйд для одноуровневой модели (например, если выход /16 от входа)
-
-  # Якоря, использовавшиеся для обучения этой одноуровневой модели (твои 6 K-Means якорей)
-  anchors_wh_normalized:
-    - [0.1326, 0.0919]
-    - [0.1059, 0.3704]
-    - [0.3600, 0.1728]
-    - [0.1484, 0.8278]
-    - [0.7600, 0.2444]
-    - [0.6420, 0.6129]
-  num_anchors_per_location: 6 # Должно соответствовать количеству якорей выше
-
-  # Параметры "головы" для v1 модели (используются в build_object_detector_v1_enhanced)
-  head_config:
-    head_body_conv_filters: 256
-    head_body_depth: 2
-    leaky_relu_alpha: 0.1
-    l2_regularization: 0.0005 # Убедись, что это используется в модели, если не null
-
-
-# --- Параметры для FPN модели детектора (например, твоя v2_fpn) ---
+# --- Параметры для FPN модели детектора ---
 fpn_detector_params:
-  model_name_prefix: "RoadDefectDetector_v2_FPN"
+  model_name_prefix: "RoadDefectDetector_v2_FPN" # Используется для имен логов/моделей
   backbone_name: "MobileNetV2"
   input_shape: [416, 416, 3]
   classes: ["pit", "crack"] # pit:0, crack:1
   num_classes: 2
 
-  detector_fpn_levels: ['P3', 'P4', 'P5'] # Имена (или ключи) уровней FPN
-  fpn_gt_assignment_scale_ranges: # Новая секция
-    P3: [0, 64]    # [min_scale_px, max_scale_px] для P3
-    P4: [64, 128]  # для P4
-    P5: [128, 10000] # для P5 (10000 как "бесконечность")
+  detector_fpn_levels: ['P3', 'P4', 'P5']
+  detector_fpn_strides: # Важно, чтобы эти страйды соответствовали тем слоям, что берутся из backbone
+    P3: 8
+    P4: 16
+    P5: 32
 
-  detector_fpn_anchor_configs:
+  fpn_gt_assignment_scale_ranges: # Диапазоны для назначения GT (в пикселях оригинального изображения)
+    P3: [0, 80]    # Пример: для мелких объектов (до 80x80px по большей стороне или sqrt(area))
+    P4: [80, 200]  # Пример: для средних объектов
+    P5: [200, 10000] # Пример: для крупных объектов (10000 как "бесконечность")
+    # Эти диапазоны НУЖНО будет подобрать на основе АНАЛИЗА РАСПРЕДЕЛЕНИЯ РАЗМЕРОВ ваших GT объектов.
+    # Сейчас это просто примерные значения. Цель - чтобы каждый уровень FPN специализировался на своем масштабе.
+
+  detector_fpn_anchor_configs: # Твои K-Means якоря - ОТЛИЧНО!
     P3:
-      num_anchors_this_level: 6 # ИЗМЕНЕНО
+      num_anchors_this_level: 6
       anchors_wh_normalized:
-        - [0.0477, 0.0377]  # Из лога для P3, K=6
+        - [0.0477, 0.0377]
         - [0.0960, 0.0561]
         - [0.0527, 0.1068]
         - [0.1509, 0.0456]
         - [0.0404, 0.1884]
         - [0.2546, 0.0327]
     P4:
-      num_anchors_this_level: 7 # ИЗМЕНЕНО
+      num_anchors_this_level: 7
       anchors_wh_normalized:
-        - [0.1832, 0.1104]   # Из лога для P4, K=7
+        - [0.1832, 0.1104]
         - [0.0967, 0.2753]
         - [0.4083, 0.0925]
         - [0.0921, 0.4968]
@@ -73,55 +42,54 @@ fpn_detector_params:
         - [0.7358, 0.0843]
         - [0.0743, 0.8969]
     P5:
-      num_anchors_this_level: 6 # ИЗМЕНЕНО
+      num_anchors_this_level: 6
       anchors_wh_normalized:
-        - [0.4390, 0.2989]   # Из лога для P5, K=6
+        - [0.4390, 0.2989]
         - [0.2827, 0.6137]
         - [0.9204, 0.2119]
         - [0.2276, 0.9227]
         - [0.6332, 0.4624]
         - [0.9001, 0.6784]
 
-  # Параметры "головы" для FPN модели (используются в build_object_detector_v2_fpn)
   head_config:
-    fpn_filters: 256            # Количество фильтров в слоях самой FPN (1x1 и 3x3 свертки)
-    head_depth: 2               # Количество Conv-BN-LeakyReLU блоков в каждой предсказывающей "голове"
-    head_conv_filters: 256      # Фильтры в сверточных слоях предсказывающих "голов"
+    fpn_filters: 256
+    head_depth: 3                # Оставим 2 для начала. Если недообучается, можно увеличить до 3.
+    head_conv_filters: 256
     leaky_relu_alpha: 0.1
-    l2_regularization: null # или 0.0005
+    l2_regularization: 0.00001   # <<< ДОБАВИМ ОЧЕНЬ МАЛЕНЬКУЮ L2 РЕГУЛЯРИЗАЦИЮ (можно начать с null, если переобучения нет)
 
-# --- Общие Параметры Обучения (могут быть переопределены в train_detector.py из DETECTOR_CONFIG) ---
-# Эти параметры в основном для train_detector.py
-# и используются для определения, какой режим обучения запускать.
-continue_from_checkpoint: false       # Для нового обучения
-path_to_checkpoint: null              # Путь к чекпоинту (если continue_from_checkpoint: true)
+# --- Общие Параметры Обучения (для текущего запуска FPN) ---
+continue_from_checkpoint: false       # Начинаем обучение FPN с нуля
+path_to_checkpoint: null
 
-unfreeze_backbone: false              # Начинаем обучение с замороженным backbone
-finetune_keep_bn_frozen: true         # Если backbone размораживается, оставлять ли BN слои замороженными
-unfreeze_backbone_layers_from_end: 0  # 0 = разморозить весь backbone (если unfreeze_backbone: true)
+unfreeze_backbone: false              # ЭТАП 1: Обучаем "головы" FPN с замороженным backbone
+finetune_keep_bn_frozen: true         # Важно для последующего fine-tuning'а
+unfreeze_backbone_layers_from_end: 20 # Количество слоев для разморозки на ЭТАПЕ 2 (fine-tuning)
 
-batch_size: 4                         # Общий batch_size по умолчанию
-epochs: 150                           # Общее количество эпох по умолчанию
+batch_size: 4                         # <<< ПОПРОБУЕМ 8 (если VRAM позволяет, если нет - 4)
+epochs: 150                           # Общее количество эпох (EarlyStopping проконтролирует)
 
-initial_learning_rate: 0.0001          # Для обучения "голов" с замороженным backbone
-finetune_learning_rate: 0.00001      # (1e-5) Для этапа fine-tuning'а размороженного backbone
+initial_learning_rate: 0.00025        # (5e-4) <<< УВЕЛИЧИМ немного для начального обучения FPN-голов.
+                                      # 1e-4 могло быть слишком медленно. Будем следить за стабильностью.
+                                      # Если будет нестабильно, вернем 1e-4.
+finetune_learning_rate: 0.00001      # (1e-5) Для этапа fine-tuning'а (ЭТАП 2)
 
-early_stopping_patience: 25
-reduce_lr_patience: 10
+early_stopping_patience: 25           # Увеличим немного терпение
+reduce_lr_patience: 10                # Увеличим немного терпение
 reduce_lr_factor: 0.2
-min_lr_on_plateau: 0.0000001 # (1e-7)
+min_lr_on_plateau: 0.0000005 # (5e-8)
 
-use_augmentation: true
+use_augmentation: true                # Обязательно для большого датасета
 
-# --- Параметры Функции Потерь (общие для всех детекторов, если не переопределены) ---
+# --- Параметры Функции Потерь ---
 loss_weights:
-  coordinates: 1.0
-  objectness: 1.0
-  no_object: 0.5
-  classification: 1.0
+  coordinates: 1.0                    # Вес для координат
+  objectness: 3.0                     # <<< ЗНАЧИТЕЛЬНО УВЕЛИЧИВАЕМ, чтобы поднять уверенность
+  no_object: 1.0                      # <<< Увеличиваем, чтобы сбалансировать objectness и штрафовать фон
+  classification: 1.5                 # Увеличиваем, чтобы классификация была точнее
 
-# --- Параметры для Инференса (общие, могут быть переопределены в predict_config.yaml) ---
-# predict_params:
-#   confidence_threshold: 0.25
-#   iou_threshold: 0.45
-#   max_detections: 100
+focal_loss_objectness_params:
+  use_focal_loss: true                # <<< ОСТАВЛЯЕМ TRUE, это должно помочь с уверенностью
+  alpha: 0.25                         # Стандартное значение
+  gamma: 2.0                          # Стандартное значение
+

@@ -28,6 +28,14 @@ _detector_config_path = _src_path / 'configs' / 'detector_config.yaml'
 BASE_CONFIG = {}
 DETECTOR_CONFIG = {}
 CONFIG_LOAD_SUCCESS_TRAIN_DET = True
+
+_fpn_params_train = DETECTOR_CONFIG.get('fpn_detector_params', DETECTOR_CONFIG)
+
+_focal_obj_cfg = _fpn_params_train.get('focal_loss_objectness_params', {}) # Эта переменная содержит нужный словарь
+USE_FOCAL_FOR_OBJECTNESS_TRAIN = _focal_obj_cfg.get('use_focal_loss', True) # <<< ИСПРАВЛЕНО
+FOCAL_ALPHA_TRAIN = _focal_obj_cfg.get('alpha', 0.25)                       # <<< ИСПРАВЛЕНО
+FOCAL_GAMMA_TRAIN = _focal_obj_cfg.get('gamma', 2.0)                         # <<< ИСПРАВЛЕНО
+
 try:
     with open(_base_config_path, 'r', encoding='utf-8') as f:
         BASE_CONFIG = yaml.safe_load(f)
@@ -278,6 +286,25 @@ def train_detector_main():
     print(f"\nКомпиляция модели с learning_rate = {current_actual_lr_var}...")
     model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=current_actual_lr_var),
                   loss=compute_detector_loss_v2_fpn)
+
+    print(
+        f"\nКомпиляция модели с learning_rate = {current_actual_lr_var}...")  # current_actual_lr_var должен быть определен ранее
+
+    # --- ВОТ ЗДЕСЬ ТЫ ИХ ПЕРЕДАЕШЬ ---
+    print(f"  Использование Focal Loss для Objectness: {USE_FOCAL_FOR_OBJECTNESS_TRAIN}")
+    if USE_FOCAL_FOR_OBJECTNESS_TRAIN:
+        print(f"    Focal Alpha: {FOCAL_ALPHA_TRAIN}, Focal Gamma: {FOCAL_GAMMA_TRAIN}")
+
+    loss_function_with_params = lambda y_true, y_pred: compute_detector_loss_v2_fpn(
+        y_true,
+        y_pred,
+        use_focal_for_obj_param=USE_FOCAL_FOR_OBJECTNESS_TRAIN,  # Передаем флаг
+        focal_alpha_param=FOCAL_ALPHA_TRAIN,  # Передаем alpha
+        focal_gamma_param=FOCAL_GAMMA_TRAIN  # Передаем gamma
+    )
+
+    model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=current_actual_lr_var),
+                  loss=loss_function_with_params)  # Используем обернутую функцию потерь
 
     # 4. Callbacks
     timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")

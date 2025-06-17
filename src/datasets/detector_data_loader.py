@@ -269,8 +269,8 @@ def assign_gt_to_fpn_levels_and_encode_by_scale(
 
     debug_img_name = image_filename_for_debug if image_filename_for_debug else "Unknown (assign_gt)"
     # --- Отладочный вывод: Начало обработки изображения ---
-    print(f"\nDEBUG assign_gt: Изображение '{debug_img_name}', Оригинальные размеры WxH: {original_image_width_px}x{original_image_height_px}")
-    print(f"  Диапазоны масштабов для FPN: {FPN_SCALE_RANGES_CFG_FROM_YAML}")
+    #print(f"\nDEBUG assign_gt: Изображение '{debug_img_name}', Оригинальные размеры WxH: {original_image_width_px}x{original_image_height_px}")
+    #print(f"  Диапазоны масштабов для FPN: {FPN_SCALE_RANGES_CFG_FROM_YAML}")
     # --- Конец отладочного вывода ---
 
     for i_obj in range(len(gt_boxes_pixels_list)):
@@ -313,8 +313,8 @@ def assign_gt_to_fpn_levels_and_encode_by_scale(
             continue
 
         # --- Отладочный вывод для назначенного объекта ---
-        print(f"  GT Объект {i_obj}: Класс ID={gt_class_id} ({CLASSES_LIST_GLOBAL_FOR_DETECTOR[gt_class_id] if 0<=gt_class_id<len(CLASSES_LIST_GLOBAL_FOR_DETECTOR) else 'Unknown'}), "
-              f"Пикс. WxH: {gt_w_px:.1f}x{gt_h_px:.1f}, Масштаб_px: {object_scale_px:.1f} -> НАЗНАЧЕН УРОВНЮ: {assigned_level_name}")
+        #print(f"  GT Объект {i_obj}: Класс ID={gt_class_id} ({CLASSES_LIST_GLOBAL_FOR_DETECTOR[gt_class_id] if 0<=gt_class_id<len(CLASSES_LIST_GLOBAL_FOR_DETECTOR) else 'Unknown'}), "
+             # f"Пикс. WxH: {gt_w_px:.1f}x{gt_h_px:.1f}, Масштаб_px: {object_scale_px:.1f} -> НАЗНАЧЕН УРОВНЮ: {assigned_level_name}")
         # --- Конец отладочного вывода ---
 
         # 3. Нормализуем координаты GT бокса относительно ВСЕГО изображения
@@ -372,11 +372,11 @@ def assign_gt_to_fpn_levels_and_encode_by_scale(
             y_true_target_level_np[grid_y_idx, grid_x_idx, best_anchor_idx, 5 + gt_class_id] = 1.0
 
             # --- Отладочный вывод для назначенного якоря ---
-            print(f"    -> Ячейка ({grid_y_idx},{grid_x_idx}), Якорь_idx {best_anchor_idx} (IoU: {best_iou_val:.3f})")
-            print(f"       Закодировано: Objectness=1, Class={gt_class_id}, Box(tx,ty,tw,th)=[{tx:.3f},{ty:.3f},{tw:.3f},{th:.3f}]")
+            #print(f"    -> Ячейка ({grid_y_idx},{grid_x_idx}), Якорь_idx {best_anchor_idx} (IoU: {best_iou_val:.3f})")
+            #print(f"       Закодировано: Objectness=1, Class={gt_class_id}, Box(tx,ty,tw,th)=[{tx:.3f},{ty:.3f},{tw:.3f},{th:.3f}]")
             # --- Конец отладочного вывода ---
-        else:
-            print(f"  DEBUG assign_gt: Якорь ({grid_y_idx},{grid_x_idx}, idx={best_anchor_idx}) на уровне {assigned_level_name} уже занят. GT объект {i_obj} не назначен этому якорю.")
+        #else:
+            #print(f"  DEBUG assign_gt: Якорь ({grid_y_idx},{grid_x_idx}, idx={best_anchor_idx}) на уровне {assigned_level_name} уже занят. GT объект {i_obj} не назначен этому якорю.")
 
     return tuple(y_true_all_levels[level_name_ret] for level_name_ret in FPN_LEVEL_NAMES_ORDERED)
 
