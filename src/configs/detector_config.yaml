@@ -103,7 +103,7 @@ unfreeze_backbone_layers_from_end: 0  # 0 = разморозить весь back
 batch_size: 4                         # Общий batch_size по умолчанию
 epochs: 150                           # Общее количество эпох по умолчанию
 
-initial_learning_rate: 0.001          # Для обучения "голов" с замороженным backbone
+initial_learning_rate: 0.0001          # Для обучения "голов" с замороженным backbone
 finetune_learning_rate: 0.00001      # (1e-5) Для этапа fine-tuning'а размороженного backbone
 
 early_stopping_patience: 25

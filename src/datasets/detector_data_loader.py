@@ -267,8 +267,9 @@ def assign_gt_to_fpn_levels_and_encode_by_scale(
     if not gt_boxes_pixels_list or original_image_width_px <= 0 or original_image_height_px <= 0:
         return tuple(y_true_all_levels[level_name_ret] for level_name_ret in FPN_LEVEL_NAMES_ORDERED)
 
+    debug_img_name = image_filename_for_debug if image_filename_for_debug else "Unknown (assign_gt)"
     # --- Отладочный вывод: Начало обработки изображения ---
-    print(f"\nDEBUG assign_gt: Изображение '{image_filename_for_debug}', Оригинальные размеры WxH: {original_image_width_px}x{original_image_height_px}")
+    print(f"\nDEBUG assign_gt: Изображение '{debug_img_name}', Оригинальные размеры WxH: {original_image_width_px}x{original_image_height_px}")
     print(f"  Диапазоны масштабов для FPN: {FPN_SCALE_RANGES_CFG_FROM_YAML}")
     # --- Конец отладочного вывода ---
 
@@ -384,9 +385,7 @@ def assign_gt_to_fpn_levels_and_encode_by_scale(
 
 # --- Ключевые функции для загрузки (с вызовом assign_gt_to_fpn_levels_and_encode_by_scale) ---
 def load_and_prepare_detector_fpn_py_func(image_path_tensor, xml_path_tensor, py_apply_augmentation_arg):
-    # ... (КОД load_and_prepare_detector_fpn_py_func КАК В МОЕМ ПРЕДЫДУЩЕМ ПОЛНОМ ОТВЕТЕ)
-    # ... (он уже использует assign_gt_to_fpn_levels_and_encode_by_scale и возвращает 6 элементов)
-    # ... (вставь сюда код этой функции из моего предыдущего ответа)
+
     image_path_str = image_path_tensor.numpy().decode('utf-8');
     xml_path_str = xml_path_tensor.numpy().decode('utf-8')
     apply_augmentation = bool(py_apply_augmentation_arg.numpy()) if hasattr(py_apply_augmentation_arg,
