@@ -28,7 +28,7 @@ from datasets.detector_data_loader import (
     NUM_CLASSES_DETECTOR as DDL_NUM_CLASSES,
     FPN_LEVEL_NAMES_ORDERED as DDL_FPN_LEVEL_NAMES,
     TARGET_IMG_HEIGHT as DDL_TARGET_IMG_HEIGHT,  # Для передачи в коллбэк
-    TARGET_IMG_WIDTH as DDL_TARGET_IMG_WIDTH  # Для передачи в коллбэк
+    TARGET_IMG_WIDTH as DDL_TARGET_IMG_WIDTH, parse_xml_annotation  # Для передачи в коллбэк
 )
 from models.object_detector import build_object_detector_v2_fpn
 from losses.detection_losses import compute_detector_loss_v2_fpn
@@ -196,19 +196,24 @@ def plot_training_history(history, save_path_plot, run_suffix=""):
 # --- Кастомный Коллбэк для Детального Логирования ---
 class FullDetailEpochEndLogger(tf.keras.callbacks.Callback):
     def __init__(self,
-                 validation_image_paths,  # СПИСОК путей к валидационным изображениям
-                 validation_xml_paths,  # СПИСОК путей к валидационным XML
-                 fpn_level_names_arg,  # Список имен уровней FPN, например ['P3', 'P4', 'P5']
-                 fpn_configs_arg,  # Словарь DDL_FPN_LEVELS_CONFIG
-                 classes_list_arg,  # Список DDL_CLASSES_LIST
-                 num_classes_arg,  # Число DDL_NUM_CLASSES
-                 target_h_arg,  # TARGET_IMG_HEIGHT
-                 target_w_arg,  # TARGET_IMG_WIDTH
-                 log_freq_epochs=5, num_samples_to_visualize=2,
-                 conf_thresh_vis=0.1, iou_thresh_nms_vis=0.45, max_dets_vis=10):
+                 val_image_paths_list_cb,
+                 val_xml_paths_list_cb,
+                 fpn_level_names_arg,
+                 fpn_configs_arg,
+                 classes_list_arg,
+                 num_classes_arg,
+                 target_h_arg,
+                 target_w_arg,
+                 log_freq_epochs=1,
+                 num_samples_to_visualize=2,
+                 conf_thresh_vis=CALLBACK_CONF_THRESH,
+                 iou_thresh_nms_vis=CALLBACK_IOU_THRESH_NMS,
+                 max_dets_vis=CALLBACK_MAX_DETS,
+                 enable_visualization_arg=None  # Принимаем None, если ключ не найден
+                 ):
         super().__init__()
-        self.val_image_paths_cb = validation_image_paths
-        self.val_xml_paths_cb = validation_xml_paths
+        self.val_image_paths = val_image_paths_list_cb
+        self.val_xml_paths = val_xml_paths_list_cb
         self.log_freq_epochs = log_freq_epochs
         self.num_samples_to_visualize = num_samples_to_visualize
 
@@ -223,7 +228,6 @@ class FullDetailEpochEndLogger(tf.keras.callbacks.Callback):
         self.target_h = target_h_arg
         self.target_w = target_w_arg
 
-        # Параметры Focal Loss из глобальной области видимости train_detector.py
         self.use_focal_for_obj_cb_val = USE_FOCAL_FOR_OBJECTNESS_TRAIN
         self.focal_alpha_cb_val = FOCAL_ALPHA_TRAIN
         self.focal_gamma_cb_val = FOCAL_GAMMA_TRAIN
@@ -231,35 +235,43 @@ class FullDetailEpochEndLogger(tf.keras.callbacks.Callback):
         self.predict_funcs_available_cb = PREDICT_FUNCS_LOADED_FOR_CALLBACK
         self.plot_utils_available_cb = PLOT_UTILS_LOADED_FOR_CALLBACK
 
+        # Устанавливаем self.enable_visualization:
+        # Если enable_visualization_arg передан (не None), используем его.
+        # Иначе (если ключ в конфиге отсутствовал и был передан None), используем дефолт (например, False).
+        if enable_visualization_arg is not None:
+            self.enable_visualization = bool(enable_visualization_arg)  # Приводим к bool на всякий случай
+        else:
+            self.enable_visualization = False  # Дефолтное значение, если в конфиге нет и не передано
+
     def on_epoch_end(self, epoch, logs=None):
-        # ... (код on_epoch_end из предыдущего ответа, но теперь он использует self.атрибуты для конфигов) ...
-        if (epoch + 1) % self.log_freq_epochs != 0: return
+        if (epoch + 1) % self.log_freq_epochs != 0:
+            return
+
         print(f"\n--- Детальный Анализ в Конце Эпохи {epoch + 1} ---")
-        logs = logs or {};
+        logs = logs or {}
         current_lr_cb_val = tf.keras.backend.get_value(self.model.optimizer.learning_rate)
         print(f"  Текущий Learning Rate: {current_lr_cb_val:.3e}")
         print(f"  Keras Logs: Train Loss={logs.get('loss'):.4f}, Val Loss={logs.get('val_loss'):.4f}")
 
         # 1. Детальные компоненты потерь
-        if self.val_image_paths_cb and len(self.val_image_paths_cb) > 0:
+        if self.val_image_paths and len(self.val_image_paths) > 0:
+            # ... (код расчета детальных потерь остается таким же) ...
             print("  Расчет детальных потерь на случайных примерах из валидации...")
             original_debug_env_var_cb_val = os.environ.get("DEBUG_TRAINING_LOOP_ACTIVE")
             os.environ["DEBUG_TRAINING_LOOP_ACTIVE"] = "1"
-
-            # Выбираем несколько случайных файлов для расчета потерь
-            num_samples_for_loss_avg = min(3 * BATCH_SIZE_CFG, len(self.val_image_paths_cb))  # Например, 3 батча
-            if num_samples_for_loss_avg > 0:
-                selected_indices_loss = random.sample(range(len(self.val_image_paths_cb)), num_samples_for_loss_avg)
-                loss_calc_img_paths = [self.val_image_paths_cb[i] for i in selected_indices_loss]
-                loss_calc_xml_paths = [self.val_xml_paths_cb[i] for i in selected_indices_loss]
-
-                temp_val_loss_dataset = create_detector_tf_dataset(loss_calc_img_paths, loss_calc_xml_paths,
-                                                                   batch_size=BATCH_SIZE_CFG, shuffle=False,
-                                                                   augment=False).take(3)  # Берем до 3х батчей
-
+            num_samples_for_loss_calc = min(3 * BATCH_SIZE_CFG, len(self.val_image_paths))
+            if num_samples_for_loss_calc > 0:
+                selected_indices_loss_cb = random.sample(range(len(self.val_image_paths)), num_samples_for_loss_calc)
+                loss_calc_img_paths_cb = [self.val_image_paths[i] for i in selected_indices_loss_cb]
+                loss_calc_xml_paths_cb = [self.val_xml_paths[i] for i in selected_indices_loss_cb]
+                temp_val_loss_dataset_cb = create_detector_tf_dataset(loss_calc_img_paths_cb, loss_calc_xml_paths_cb,
+                                                                      batch_size=BATCH_SIZE_CFG, shuffle=False,
+                                                                      augment=False)
+                num_batches_to_avg_loss = 3;
+                temp_val_loss_dataset_cb = temp_val_loss_dataset_cb.take(num_batches_to_avg_loss)
                 all_batch_detailed_losses_cb_val = []
                 try:
-                    for val_images_cb_loss, val_y_true_tuple_cb_loss in temp_val_loss_dataset:
+                    for val_images_cb_loss, val_y_true_tuple_cb_loss in temp_val_loss_dataset_cb:
                         val_y_pred_list_cb_loss = self.model(val_images_cb_loss, training=False)
                         detailed_loss_batch = compute_detector_loss_v2_fpn(val_y_true_tuple_cb_loss,
                                                                            val_y_pred_list_cb_loss,
@@ -270,9 +282,8 @@ class FullDetailEpochEndLogger(tf.keras.callbacks.Callback):
                             detailed_loss_batch)
                 except Exception as e_loss_cb_calc:
                     print(f"    ОШИБКА при расчете потерь в коллбэке: {e_loss_cb_calc}")
-
-                if all_batch_detailed_losses_cb_val:  # ... (остальной код усреднения потерь)
-                    avg_detailed_losses_cb_val = {}
+                if all_batch_detailed_losses_cb_val:
+                    avg_detailed_losses_cb_val = {};
                     for key_cb_val in all_batch_detailed_losses_cb_val[0].keys():
                         valid_tensors = [d_cb_val[key_cb_val] for d_cb_val in all_batch_detailed_losses_cb_val if
                                          hasattr(d_cb_val[key_cb_val], 'numpy')]
@@ -282,64 +293,99 @@ class FullDetailEpochEndLogger(tf.keras.callbacks.Callback):
                     for k_cb_val, v_avg_cb_val in avg_detailed_losses_cb_val.items():
                         print(f"    val_{k_cb_val}_cb: {v_avg_cb_val:.4f}")
                         if logs is not None: logs[f'val_{k_cb_val}_cb'] = v_avg_cb_val
-
             if original_debug_env_var_cb_val is None:
                 if "DEBUG_TRAINING_LOOP_ACTIVE" in os.environ: del os.environ["DEBUG_TRAINING_LOOP_ACTIVE"]
             else:
                 os.environ["DEBUG_TRAINING_LOOP_ACTIVE"] = original_debug_env_var_cb_val
 
         # 2. Визуализация предсказаний
-        if self.predict_funcs_available_cb and self.plot_utils_available_cb and self.val_image_paths_cb and self.num_samples_to_visualize > 0:
+        if self.enable_visualization and self.predict_funcs_available_cb and self.plot_utils_available_cb and self.val_image_paths and self.num_samples_to_visualize > 0:
+            # ... (остальной код визуализации как в твоей последней версии, он использует self.enable_visualization) ...
+            # ВАЖНО: Убедись, что вызов plt.show() внутри visualize_fpn_detections_vs_gt закомментирован,
+            # а сама функция возвращает объект fig.
             print(f"\n  Визуализация предсказаний на {self.num_samples_to_visualize} случайных валидационных примерах:")
-            num_to_show_actually_vis = min(self.num_samples_to_visualize, len(self.val_image_paths_cb))
-            if num_to_show_actually_vis > 0:
-                selected_indices_vis_cb_vis = random.sample(range(len(self.val_image_paths_cb)),
-                                                            num_to_show_actually_vis)
-                for vis_idx_cb_vis in selected_indices_vis_cb_vis:  # ... (остальной код визуализации как был, используя self.атрибуты)
-                    img_path_vis_cb = self.val_image_paths_cb[vis_idx_cb_vis]
-                    xml_path_vis_cb = self.val_xml_paths_cb[vis_idx_cb_vis]
+            num_to_show_actually_vis_cb = min(self.num_samples_to_visualize, len(self.val_image_paths))
+            if num_to_show_actually_vis_cb > 0:
+                selected_indices_vis_cb_vis = random.sample(range(len(self.val_image_paths)),
+                                                            num_to_show_actually_vis_cb)
+                for vis_idx_cb_vis in selected_indices_vis_cb_vis:
+                    img_path_vis_cb = self.val_image_paths[vis_idx_cb_vis];
+                    xml_path_vis_cb = self.val_xml_paths[vis_idx_cb_vis]
                     print(f"    Обработка для визуализации: {os.path.basename(img_path_vis_cb)}")
                     try:
                         original_bgr_img_cb_vis = cv2.imread(img_path_vis_cb)
                         if original_bgr_img_cb_vis is None: continue
                         temp_gt_dataset_vis = create_detector_tf_dataset([img_path_vis_cb], [xml_path_vis_cb],
                                                                          batch_size=1, shuffle=False, augment=False)
-                        processed_img_for_gt_vis, y_true_tuple_for_gt_vis = next(iter(temp_gt_dataset_vis))
+                        processed_img_for_gt_vis_tensor_batch, y_true_tuple_for_gt_vis_tensor_batch = next(
+                            iter(temp_gt_dataset_vis))
+                        processed_img_for_gt_vis_tensor = processed_img_for_gt_vis_tensor_batch[0]
+                        y_true_tuple_for_gt_vis_tensor = (
+                        y_true_tuple_for_gt_vis_tensor_batch[0][0], y_true_tuple_for_gt_vis_tensor_batch[1][0],
+                        y_true_tuple_for_gt_vis_tensor_batch[2][0])
                         detector_input_batch_vis_cb = preprocess_image_for_model_tf(original_bgr_img_cb_vis,
                                                                                     self.target_h, self.target_w)
                         raw_model_preds_list_vis_cb = self.model.predict(detector_input_batch_vis_cb, verbose=0)
                         all_lvl_boxes_cb_vis, all_lvl_obj_cb_vis, all_lvl_cls_cb_vis = [], [], []
-                        for i_lvl_vis_cb, lvl_key_vis_cb in enumerate(self.fpn_level_names_cb):
-                            raw_preds_lvl_cb_vis = raw_model_preds_list_vis_cb[i_lvl_vis_cb]
+                        for i_lvl_vis_cb, lvl_key_vis_cb in enumerate(self.fpn_level_names):
+                            raw_preds_lvl_cb_vis = raw_model_preds_list_vis_cb[i_lvl_vis_cb];
                             lvl_cfg_vis_cb = self.fpn_configs.get(lvl_key_vis_cb)
-                            dec_b, obj_c, cls_p = decode_single_level_predictions_generic(
-                                raw_preds_lvl_cb_vis, lvl_cfg_vis_cb['anchors_wh_normalized'],
-                                lvl_cfg_vis_cb['grid_h'], lvl_cfg_vis_cb['grid_w'], self.num_classes_cb)
-                            all_lvl_boxes_cb_vis.append(dec_b);
-                            all_lvl_obj_cb_vis.append(obj_c);
-                            all_lvl_cls_cb_vis.append(cls_p)
+                            if lvl_cfg_vis_cb is None: continue
+                            decoded_boxes_level, obj_confidence_level, class_probs_level = decode_single_level_predictions_generic(
+                                raw_preds_lvl_cb_vis, lvl_cfg_vis_cb['anchors_wh_normalized'], lvl_cfg_vis_cb['grid_h'],
+                                lvl_cfg_vis_cb['grid_w'], self.num_classes)
+                            all_lvl_boxes_cb_vis.append(decoded_boxes_level);
+                            all_lvl_obj_cb_vis.append(obj_confidence_level);
+                            all_lvl_cls_cb_vis.append(class_probs_level)
                         if all_lvl_boxes_cb_vis:
-                            nms_b, nms_s, nms_c, num_v = apply_nms_and_filter_generic(
-                                all_lvl_boxes_cb_vis, all_lvl_obj_cb_vis, all_lvl_cls_cb_vis,
-                                self.num_classes_cb, self.conf_thresh_vis, self.iou_thresh_nms_vis, self.max_dets_vis)
+                            nms_b, nms_s, nms_c, num_v = apply_nms_and_filter_generic(all_lvl_boxes_cb_vis,
+                                                                                      all_lvl_obj_cb_vis,
+                                                                                      all_lvl_cls_cb_vis,
+                                                                                      self.num_classes,
+                                                                                      self.conf_thresh_vis,
+                                                                                      self.iou_thresh_nms_vis,
+                                                                                      self.max_dets_vis)
                             num_preds_to_show_cb = int(num_v[0].numpy())
-                            pred_boxes_for_viz_cb = nms_b[0][:num_preds_to_show_cb].numpy()
-                            pred_scores_for_viz_cb = nms_s[0][:num_preds_to_show_cb].numpy()
+                            pred_boxes_for_viz_cb = nms_b[0][:num_preds_to_show_cb].numpy();
+                            pred_scores_for_viz_cb = nms_s[0][:num_preds_to_show_cb].numpy();
                             pred_classes_for_viz_cb = nms_c[0][:num_preds_to_show_cb].numpy().astype(int)
-                            visualize_fpn_detections_vs_gt(image_np_processed=processed_img_for_gt_vis[0].numpy(),
-                                                           y_true_fpn_tuple_np=(y_true_tuple_for_gt_vis[0][0].numpy(),
-                                                                                y_true_tuple_for_gt_vis[1][0].numpy(),
-                                                                                y_true_tuple_for_gt_vis[2][0].numpy()),
-                                                           pred_boxes_norm_yxyx=pred_boxes_for_viz_cb,
-                                                           pred_scores=pred_scores_for_viz_cb,
-                                                           pred_class_ids=pred_classes_for_viz_cb,
-                                                           fpn_level_names=self.fpn_level_names_cb,
-                                                           fpn_configs=self.fpn_configs,
-                                                           classes_list=self.classes_list_cb,
-                                                           title_prefix=f"Epoch {epoch + 1} - {os.path.basename(img_path_vis_cb)}")
+                            gt_objs_orig_viz, orig_w_xml, orig_h_xml, _ = parse_xml_annotation(xml_path_vis_cb,
+                                                                                               self.classes_list)
+                            orig_gt_boxes_norm_for_ref_list = [];
+                            orig_gt_ids_for_ref_list = []
+                            if gt_objs_orig_viz:
+                                img_w_to_use_ref = orig_w_xml if orig_w_xml and orig_w_xml > 0 else \
+                                original_bgr_img_cb_vis.shape[1]
+                                img_h_to_use_ref = orig_h_xml if orig_h_xml and orig_h_xml > 0 else \
+                                original_bgr_img_cb_vis.shape[0]
+                                for obj_gt_orig in gt_objs_orig_viz:
+                                    if img_w_to_use_ref > 0 and img_h_to_use_ref > 0:
+                                        xmin_n = obj_gt_orig['xmin'] / img_w_to_use_ref;
+                                        ymin_n = obj_gt_orig['ymin'] / img_h_to_use_ref;
+                                        xmax_n = obj_gt_orig['xmax'] / img_w_to_use_ref;
+                                        ymax_n = obj_gt_orig['ymax'] / img_h_to_use_ref
+                                        orig_gt_boxes_norm_for_ref_list.append([xmin_n, ymin_n, xmax_n, ymax_n]);
+                                        orig_gt_ids_for_ref_list.append(obj_gt_orig['class_id'])
+                            original_gt_tuple_for_viz = (np.array(orig_gt_boxes_norm_for_ref_list, dtype=np.float32),
+                                                         np.array(orig_gt_ids_for_ref_list, dtype=np.int32))
+
+                            fig_returned = visualize_fpn_detections_vs_gt(
+                                image_np_processed=processed_img_for_gt_vis_tensor.numpy(),
+                                y_true_fpn_tuple_np=(
+                                y_true_tuple_for_gt_vis_tensor[0].numpy(), y_true_tuple_for_gt_vis_tensor[1].numpy(),
+                                y_true_tuple_for_gt_vis_tensor[2].numpy()),
+                                pred_boxes_norm_yxyx=pred_boxes_for_viz_cb, pred_scores=pred_scores_for_viz_cb,
+                                pred_class_ids=pred_classes_for_viz_cb,
+                                fpn_level_names=self.fpn_level_names, fpn_configs=self.fpn_configs,
+                                classes_list=self.classes_list,
+                                original_gt_boxes_for_reference=original_gt_tuple_for_viz,
+                                title_prefix=f"Epoch {epoch + 1} - {os.path.basename(img_path_vis_cb)}")
+                            plt.show()
+
                     except Exception as e_vis_cb_loop:
                         print(
-                            f"    ОШИБКА виз. в коллбэке: {e_vis_cb_loop}");  # import traceback; traceback.print_exc()
+                            f"    ОШИБКА виз. в коллбэке для {os.path.basename(img_path_vis_cb)}: {e_vis_cb_loop}"); import \
+                            traceback; traceback.print_exc()
         print(f"--- Конец Детального Лога Эпохи {epoch + 1} ---")
 
 
@@ -446,7 +492,8 @@ def train_detector_main():
                                                                    use_focal_for_obj_param=USE_FOCAL_FOR_OBJECTNESS_TRAIN,
                                                                    focal_alpha_param=FOCAL_ALPHA_TRAIN,
                                                                    focal_gamma_param=FOCAL_GAMMA_TRAIN)
-    model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=current_lr), loss=loss_fn_compiled)
+    model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=current_lr),
+                  loss=compute_detector_loss_v2_fpn)
 
     # 4. Callbacks
     timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -456,24 +503,30 @@ def train_detector_main():
     tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=str(log_dir_abs_session), histogram_freq=1,
                                                           profile_batch=0)
 
-    callbacks_list = [tensorboard_callback, EpochTimeLogger()]
 
     best_model_filename_session = f'{MODEL_BASE_NAME_CFG}_{training_run_description}_best.keras'
     checkpoint_filepath_best_session = WEIGHTS_BASE_DIR_ABS / best_model_filename_session
 
     # ИСПРАВЛЕНО: validation_dataset теперь определена до этого блока
-    if validation_dataset and val_image_paths:  # Добавил val_image_paths для коллбэка
+    callbacks_list = [tensorboard_callback, EpochTimeLogger()]
+
+    if validation_dataset and val_image_paths:  # Убедимся, что есть и датасет, и пути
+        enable_vis_from_cfg_value = DETECTOR_CONFIG.get('debug_callback_enable_visualization')
         detailed_logger = FullDetailEpochEndLogger(
-            validation_image_paths=val_image_paths,  # Передаем списки путей
-            validation_xml_paths=val_xml_paths,
-            fpn_level_names_arg=DDL_FPN_LEVEL_NAMES,  # Глобальные из detector_data_loader
-            fpn_configs_arg=DDL_FPN_LEVELS_CONFIG,  # Глобальные из detector_data_loader
-            classes_list_arg=DDL_CLASSES_LIST,
-            num_classes_arg=DDL_NUM_CLASSES,
-            target_h_arg=DDL_TARGET_IMG_HEIGHT,
-            target_w_arg=DDL_TARGET_IMG_WIDTH,
-            log_freq_epochs=DETECTOR_CONFIG.get('debug_callback_log_freq', 5),
-            num_samples_to_visualize=DETECTOR_CONFIG.get('debug_callback_num_samples', 1)  # Уменьшил для скорости
+            val_image_paths_list_cb=val_image_paths,  # Передаем списки путей
+            val_xml_paths_list_cb=val_xml_paths,
+            fpn_level_names_arg=DDL_FPN_LEVEL_NAMES,  # Из detector_data_loader
+            fpn_configs_arg=DDL_FPN_LEVELS_CONFIG,  # Из detector_data_loader
+            classes_list_arg=DDL_CLASSES_LIST,  # Из detector_data_loader
+            num_classes_arg=DDL_NUM_CLASSES,  # Из detector_data_loader
+            target_h_arg=DDL_TARGET_IMG_HEIGHT,  # Из detector_data_loader
+            target_w_arg=DDL_TARGET_IMG_WIDTH,  # Из detector_data_loader
+            log_freq_epochs=DETECTOR_CONFIG.get('debug_callback_log_freq', 1),
+            num_samples_to_visualize=DETECTOR_CONFIG.get('debug_callback_num_samples', 2),
+            conf_thresh_vis=CALLBACK_CONF_THRESH,  # Глобальные переменные из train_detector.py
+            iou_thresh_nms_vis=CALLBACK_IOU_THRESH_NMS,
+            max_dets_vis=CALLBACK_MAX_DETS,
+            enable_visualization_arg=enable_vis_from_cfg_value
         )
         callbacks_list.append(detailed_logger)
         # ... (остальные коллбэки: ModelCheckpoint, EarlyStopping, ReduceLROnPlateau - КАК БЫЛИ) ...

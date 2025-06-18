@@ -83,7 +83,8 @@ min_lr_on_plateau: 0.0000005 # (5e-8)
 use_augmentation: true                # Обязательно для большого датасета
 
 debug_callback_log_freq: 1  # <<<--- УСТАНОВИ В 1
-debug_callback_num_samples: 2 # (или сколько ты хочешь видеть)
+debug_callback_num_samples: 5 # (или сколько ты хочешь видеть)
+debug_callback_enable_visualization: true
 
 # --- Параметры Функции Потерь ---
 loss_weights:
