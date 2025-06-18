@@ -68,7 +68,7 @@ finetune_keep_bn_frozen: true         # Важно для последующег
 unfreeze_backbone_layers_from_end: 20 # Количество слоев для разморозки на ЭТАПЕ 2 (fine-tuning)
 
 batch_size: 4                         # <<< ПОПРОБУЕМ 8 (если VRAM позволяет, если нет - 4)
-epochs: 150                           # Общее количество эпох (EarlyStopping проконтролирует)
+epochs: 100                           # Общее количество эпох (EarlyStopping проконтролирует)
 
 initial_learning_rate: 0.00025        # (5e-4) <<< УВЕЛИЧИМ немного для начального обучения FPN-голов.
                                       # 1e-4 могло быть слишком медленно. Будем следить за стабильностью.
@@ -83,8 +83,8 @@ min_lr_on_plateau: 0.0000005 # (5e-8)
 use_augmentation: true                # Обязательно для большого датасета
 
 debug_callback_log_freq: 1  # <<<--- УСТАНОВИ В 1
-debug_callback_num_samples: 5 # (или сколько ты хочешь видеть)
-debug_callback_enable_visualization: true
+debug_callback_num_samples: 1 # (или сколько ты хочешь видеть)
+debug_callback_enable_visualization: false
 
 # --- Параметры Функции Потерь ---
 loss_weights:

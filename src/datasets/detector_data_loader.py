@@ -624,7 +624,6 @@ if __name__ == '__main__':
                                 fpn_level_names=FPN_LEVEL_NAMES_ORDERED,
                                 fpn_configs=FPN_LEVELS_CONFIG_GLOBAL,
                                 classes_list=CLASSES_LIST_GLOBAL_FOR_DETECTOR,
-                                original_gt_boxes_for_reference=(boxes_viz_o, classes_viz_o),
                                 title_prefix=f"GT (Scale) for {os.path.basename(img_path_test)} [ORIGINAL]"
                             )
                     except Exception as e_orig_test:
@@ -656,7 +655,6 @@ if __name__ == '__main__':
                                     fpn_level_names=FPN_LEVEL_NAMES_ORDERED,
                                     fpn_configs=FPN_LEVELS_CONFIG_GLOBAL,
                                     classes_list=CLASSES_LIST_GLOBAL_FOR_DETECTOR,
-                                    original_gt_boxes_for_reference=(boxes_viz_a, classes_viz_a),
                                     title_prefix=f"GT (Scale) for {os.path.basename(img_path_test)} [AUGMENTED]"
                                 )
                         except Exception as e_aug_test:

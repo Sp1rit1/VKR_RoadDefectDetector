@@ -112,14 +112,9 @@ def decode_single_level_y_true_for_viz(y_true_level_np,
 def visualize_fpn_gt_assignments(
         image_np_processed,  # Изображение, как оно подавалось в модель (например, 416x416, нормализованное [0,1])
         y_true_fpn_tuple_np,  # Кортеж из (y_true_P3_np, y_true_P4_np, y_true_P5_np) для GT
-        pred_boxes_norm_yxyx,  # Предсказанные рамки ПОСЛЕ NMS, нормализованные [ymin, xmin, ymax, xmax]
-        pred_scores,  # Уверенности для предсказанных рамок
-        pred_class_ids,  # ID классов для предсказанных рамок
         fpn_level_names,  # Список имен уровней FPN, например ['P3', 'P4', 'P5']
         fpn_configs,  # Словарь с конфигурацией для каждого уровня FPN (страйды, якоря, размеры сетки)
         classes_list,  # Список имен классов для детектора (['pit', 'crack'])
-        original_gt_boxes_for_reference=None,
-        # Опционально: (scaled_boxes_np_xyxy_norm, class_ids_np) для оригинальных GT
         title_prefix="",
         show_grid_for_level=None  # "P3", "P4", "P5" или None (не рисовать сетку). Можно также "ALL"
 ):
@@ -185,69 +180,6 @@ def visualize_fpn_gt_assignments(
                 if gt_legend_label not in legend_handles_dict:
                     legend_handles_dict[gt_legend_label] = patches.Patch(color=box_color_gt, linestyle='--',
                                                                          label=gt_legend_label)
-
-    # 2. Отрисовка Предсказаний Модели (pred_boxes_norm_yxyx, pred_scores, pred_class_ids)
-    num_predictions = pred_boxes_norm_yxyx.shape[0]
-    print(f"  Visualizing {num_predictions} Predictions for {title_prefix}:")
-    if num_predictions > 0:
-        for i_pred in range(num_predictions):
-            ymin_n_pred, xmin_n_pred, ymax_n_pred, xmax_n_pred = pred_boxes_norm_yxyx[i_pred]
-            score_pred = pred_scores[i_pred]
-            class_id_pred = int(pred_class_ids[i_pred])
-
-            class_name_pred = classes_list[class_id_pred] if 0 <= class_id_pred < len(classes_list) else "Unknown"
-
-            xmin_px_pred = int(xmin_n_pred * img_w_display)
-            ymin_px_pred = int(ymin_n_pred * img_h_display)
-            xmax_px_pred = int(xmax_n_pred * img_w_display)
-            ymax_px_pred = int(ymax_n_pred * img_h_display)
-
-            rect_width_pred, rect_height_pred = xmax_px_pred - xmin_px_pred, ymax_px_pred - ymin_px_pred
-
-            # Цвет для предсказаний (например, синий для pit, оранжевый для crack)
-            pred_color = 'blue' if class_name_pred == classes_list[0] else (
-                'orange' if len(classes_list) > 1 and class_name_pred == classes_list[1] else 'purple')
-
-            rect_pred_viz = patches.Rectangle((xmin_px_pred, ymin_px_pred), rect_width_pred, rect_height_pred,
-                                              linewidth=2, edgecolor=pred_color, facecolor='none',
-                                              linestyle='-')  # Предсказания сплошной линией
-            ax.add_patch(rect_pred_viz)
-            ax.text(xmin_px_pred, ymin_px_pred + rect_height_pred + 5,  # Текст под рамкой
-                    f"Pred: {class_name_pred} ({score_pred:.2f})",
-                    color=pred_color, fontsize=7, bbox=dict(facecolor='white', alpha=0.7, pad=0, edgecolor='none'))
-
-            pred_legend_label = f"Prediction ({class_name_pred})"
-            if pred_legend_label not in legend_handles_dict:
-                legend_handles_dict[pred_legend_label] = patches.Patch(color=pred_color, label=pred_legend_label)
-
-    # 3. Опционально: отрисовка оригинальных GT рамок (если они сильно отличаются от y_true назначений)
-    if original_gt_boxes_for_reference:
-        # ... (код отрисовки original_gt_boxes_for_reference как был, но можно другим цветом/стилем)
-        # Предположим, это кортеж (scaled_boxes_np_xyxy_norm, class_ids_np)
-        if isinstance(original_gt_boxes_for_reference, tuple) and len(original_gt_boxes_for_reference) == 2:
-            scaled_boxes_np_ref, class_ids_np_ref = original_gt_boxes_for_reference
-            if scaled_boxes_np_ref.ndim == 2 and scaled_boxes_np_ref.shape[1] == 4 and class_ids_np_ref.ndim == 1:
-                for i_ref in range(scaled_boxes_np_ref.shape[0]):
-                    xmin_n_ref, ymin_n_ref, xmax_n_ref, ymax_n_ref = scaled_boxes_np_ref[
-                        i_ref]  # Предполагаем, что это уже xmin,ymin,xmax,ymax
-                    class_id_ref = int(class_ids_np_ref[i_ref])
-                    class_name_ref = classes_list[class_id_ref] if 0 <= class_id_ref < len(classes_list) else "Unknown"
-
-                    xmin_px_ref, ymin_px_ref, xmax_px_ref, ymax_px_ref = \
-                        int(xmin_n_ref * img_w_display), int(ymin_n_ref * img_h_display), \
-                            int(xmax_n_ref * img_w_display), int(ymax_n_ref * img_h_display)
-
-                    rect_orig_gt = patches.Rectangle((xmin_px_ref, ymin_px_ref), xmax_px_ref - xmin_px_ref,
-                                                     ymax_px_ref - ymin_px_ref,
-                                                     linewidth=1, edgecolor='magenta', facecolor='none',
-                                                     linestyle=':')  # Magenta, точечный
-                    ax.add_patch(rect_orig_gt)
-                    ax.text(xmin_px_ref + 5, ymin_px_ref + 5, f"OrigGT:{class_name_ref}", color='magenta', fontsize=5)
-
-                    orig_gt_legend_label = "Original GT (for ref.)"
-                    if orig_gt_legend_label not in legend_handles_dict:
-                        legend_handles_dict[orig_gt_legend_label] = patches.Patch(color='magenta', linestyle=':',
-                                                                                  label=orig_gt_legend_label)
 
     if legend_handles_dict:
         ax.legend(handles=list(legend_handles_dict.values()), loc='lower right', fontsize='xx-small')
