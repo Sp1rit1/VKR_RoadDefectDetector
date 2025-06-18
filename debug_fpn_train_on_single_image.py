@@ -151,8 +151,8 @@ def main_debug_train_single_random_defective_image():
         master_dataset_root_abs = _project_root_debug / master_dataset_root_abs
     defective_images_parent_dir_name = DDL_BASE_CONFIG.get('source_defective_road_img_parent_subdir',
                                                            "Defective_Road_Images")
-    source_images_dir = master_dataset_root_abs / defective_images_parent_dir_name / DDL_IMAGES_SUBDIR_NAME
-    source_annotations_dir = master_dataset_root_abs / defective_images_parent_dir_name / DDL_ANNOTATIONS_SUBDIR_NAME
+    source_images_dir = Path("C:/Users/0001/Desktop/Diplom/RoadDefectDetector/debug_data")############################################master_dataset_root_abs / defective_images_parent_dir_name / DDL_IMAGES_SUBDIR_NAME
+    source_annotations_dir = Path("C:/Users/0001/Desktop/Diplom/RoadDefectDetector/debug_data")########################################master_dataset_root_abs / defective_images_parent_dir_name / DDL_ANNOTATIONS_SUBDIR_NAME
 
     if not source_images_dir.is_dir() or not source_annotations_dir.is_dir():
         print(f"ОШИБКА: Не найдены директории для '{defective_images_parent_dir_name}'.");
