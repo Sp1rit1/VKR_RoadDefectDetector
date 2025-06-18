@@ -75,11 +75,10 @@ NO_OBJECT_LOSS_WEIGHT_LOSS_MODULE = _loss_weights_cfg_loss_module.get('no_object
 CLASS_LOSS_WEIGHT_LOSS_MODULE = _loss_weights_cfg_loss_module.get('classification', 1.0)
 
 # Флаг для детального вывода (управляется извне через os.environ)
-DEBUG_ACTIVE_LOSS_MODULE = True
 
 
 # @tf.function # Убираем для отладки с tf.print
-def compute_detector_loss_single_level_debug(y_true_single_level, y_pred_single_level):
+def compute_detector_loss_single_level_debug(y_true_single_level, y_pred_single_level, return_details=False):
     shape_y_true = tf.shape(y_true_single_level)
     batch_size_loss = shape_y_true[0]
     num_features_total_loss = shape_y_true[4]
@@ -138,7 +137,7 @@ def compute_detector_loss_single_level_debug(y_true_single_level, y_pred_single_
 
     final_total_loss = total_objectness_loss_val + total_class_loss_val + total_box_loss_val
 
-    if DEBUG_ACTIVE_LOSS_MODULE:  # Используем флаг этого модуля
+    if return_details:  # Используем флаг этого модуля
         return {
             'total_loss': final_total_loss,
             f'obj_loss_{_debug_level_name_loss_module}': total_objectness_loss_val,  # Используем имя уровня
@@ -174,6 +173,8 @@ if __name__ == '__main__':
                               NUM_ANCHORS_DEBUG_LEVEL_LOSS_MODULE, 5 + NUM_CLASSES_LOSS_MODULE)
     y_pred_shape_test_main = y_true_shape_test_main
 
+    DEBUG_ACTIVE_LOSS_MODULE='1'
+
     # --- Тест 1: Идеальные предсказания ---
     print("\nТестирование с ИДЕАЛЬНЫМИ предсказаниями (loss должен быть близок к 0):")
     y_true_np_ideal_main = np.zeros(y_true_shape_test_main, dtype=np.float32)
@@ -193,14 +194,13 @@ if __name__ == '__main__':
     y_pred_logits_ideal_np_main[..., 5:] = np.where(y_true_np_ideal_main[..., 5:] > 0.5, 10.0, -10.0)
     y_pred_tf_ideal_main = tf.constant(y_pred_logits_ideal_np_main, dtype=np.float32)
 
-    loss_details_ideal_main = compute_detector_loss_single_level_debug(y_true_tf_ideal_main, y_pred_tf_ideal_main)
+    loss_details_ideal_main = compute_detector_loss_single_level_debug(y_true_tf_ideal_main, y_pred_tf_ideal_main, True)
     print("  Детальные Потери (Идеальные):")
     if isinstance(loss_details_ideal_main, dict): # <<<--- ПРОВЕРКА ТИПА
         for k_main, v_tensor_main in loss_details_ideal_main.items():
             print(f"    {k_main}: {v_tensor_main.numpy():.8f}")
     else: # Если вернулся только total_loss
         print(f"    total_loss: {loss_details_ideal_main.numpy():.8f}")
-        print("    (Для детальных потерь установите переменную окружения DEBUG_TRAINING_LOOP_ACTIVE='1' перед запуском)")
 
     # --- Тест 2: Случайные предсказания ---
     print("\nТестирование со СЛУЧАЙНЫМИ предсказаниями:")
@@ -208,14 +208,12 @@ if __name__ == '__main__':
     y_pred_tf_random_main = tf.constant(y_pred_logits_random_np_main,
                                         dtype=tf.float32)  # <<<--- УБЕДИСЬ, ЧТО ЭТА СТРОКА ЕСТЬ И ИМЯ ПЕРЕМЕННОЙ ПРАВИЛЬНОЕ
 
-    loss_details_random_main = compute_detector_loss_single_level_debug(y_true_tf_ideal_main,
-                                                                        y_pred_tf_random_main)  # Теперь y_pred_tf_random_main определена
+    loss_details_random_main = compute_detector_loss_single_level_debug(y_true_tf_ideal_main, y_pred_tf_random_main, True)  # Теперь y_pred_tf_random_main определена
     print("  Детальные Потери (Случайные):")
     if isinstance(loss_details_random_main, dict): # <<<--- ПРОВЕРКА ТИПА
         for k_main, v_tensor_main in loss_details_random_main.items():
             print(f"    {k_main}: {v_tensor_main.numpy():.6f}")
     else:
         print(f"    total_loss: {loss_details_random_main.numpy():.6f}")
-        print("    (Для детальных потерь установите переменную окружения DEBUG_TRAINING_LOOP_ACTIVE='1' перед запуском)")
 
     print("\n--- Тестирование detection_losses_single_level_debug.py завершено ---")

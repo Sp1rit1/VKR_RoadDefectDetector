@@ -88,7 +88,6 @@ print(f"  Количество итераций: {NUM_ITERATIONS_DEBUG_SL_FIXED}
 print(f"  Логирование потерь каждые ~{int(LOG_LOSS_EVERY_N_ITERATIONS_SL)} итераций")
 print(f"  Визуализация каждые ~{int(VISUALIZE_EVERY_N_ITERATIONS_SL_FIXED)} итераций")
 
-os.environ['DEBUG_TRAINING_LOOP_ACTIVE'] = '1'  # Для детального вывода функции потерь
 
 
 def check_weights_changed_sl_fixed(model, initial_weights_list, iteration):
@@ -122,7 +121,6 @@ def check_weights_changed_sl_fixed(model, initial_weights_list, iteration):
 
 def main_debug_single_level_train_on_fixed_image_func():
     print("\n--- Отладка ОДНОУРОВНЕВОЙ МОДЕЛИ: Обучение на ОДНОМ ФИКСИРОВАННОМ Изображении ---")
-
     DEBUG_IMAGE_FILENAME_FIXED = "China_Drone_000022.jpg"  # <<<--- ЗАМЕНИ НА ИМЯ ТВОЕГО ФАЙЛА ИЗОБРАЖЕНИЯ
     DEBUG_XML_FILENAME_FIXED = "China_Drone_000022.xml"  # <<<--- ЗАМЕНИ НА ИМЯ ТВОЕГО XML ФАЙЛА
     debug_data_folder_fixed = Path("C:/Users/0001/Desktop/Diplom/RoadDefectDetector/debug_data")
@@ -197,7 +195,8 @@ def main_debug_single_level_train_on_fixed_image_func():
             y_pred_single_level_logits = model_sl_fixed(images_batch_for_train, training=True)
             loss_details_dict_sl = compute_detector_loss_single_level_debug(
                 y_true_batch_for_train,
-                y_pred_single_level_logits
+                y_pred_single_level_logits,
+                True
             )
             total_loss_sl = loss_details_dict_sl['total_loss']
 
