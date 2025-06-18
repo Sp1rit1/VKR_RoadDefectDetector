@@ -3,12 +3,12 @@
 classifier_model_path: "weights/classifier_trained_model_best.keras"
 
 # --- Укажи здесь, какую модель детектора и какого типа ты хочешь использовать ---
-detector_model_path: "weights/RoadDefectDetector_v2_FPN_initial_frozen_bb_best.keras" # ИЛИ "weights/detector_v1_best_overall.keras"
+detector_model_path: "weights/RoadDefectDetector_FPN_initial_frozen_bb_best.keras" # ИЛИ "weights/detector_v1_best_overall.keras"
 detector_type: "fpn"  # fpn ИЛИ "single_level"
 
 output_dir: "prediction_results_pipeline"
 default_conf_thresh: 0.1
-default_iou_thresh: 0.3
+default_iou_thresh: 0.1
 default_max_dets: 100
 
 # Параметры Классификатора (для инференса)
