@@ -121,8 +121,8 @@ def check_weights_changed_sl_fixed(model, initial_weights_list, iteration):
 
 def main_debug_single_level_train_on_fixed_image_func():
     print("\n--- Отладка ОДНОУРОВНЕВОЙ МОДЕЛИ: Обучение на ОДНОМ ФИКСИРОВАННОМ Изображении ---")
-    DEBUG_IMAGE_FILENAME_FIXED = "China_Drone_000022.jpg"  # <<<--- ЗАМЕНИ НА ИМЯ ТВОЕГО ФАЙЛА ИЗОБРАЖЕНИЯ
-    DEBUG_XML_FILENAME_FIXED = "China_Drone_000022.xml"  # <<<--- ЗАМЕНИ НА ИМЯ ТВОЕГО XML ФАЙЛА
+    DEBUG_IMAGE_FILENAME_FIXED = "China_Drone_000180.jpg"  # <<<--- ЗАМЕНИ НА ИМЯ ТВОЕГО ФАЙЛА ИЗОБРАЖЕНИЯ
+    DEBUG_XML_FILENAME_FIXED = "China_Drone_000180.xml"  # <<<--- ЗАМЕНИ НА ИМЯ ТВОЕГО XML ФАЙЛА
     debug_data_folder_fixed = Path("C:/Users/0001/Desktop/Diplom/RoadDefectDetector/debug_data")
 
     fixed_image_path = debug_data_folder_fixed / DEBUG_IMAGE_FILENAME_FIXED

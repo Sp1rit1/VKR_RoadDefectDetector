@@ -77,8 +77,9 @@ CLASS_LOSS_WEIGHT_LOSS_MODULE = _loss_weights_cfg_loss_module.get('classificatio
 # Флаг для детального вывода (управляется извне через os.environ)
 
 
+
 # @tf.function # Убираем для отладки с tf.print
-def compute_detector_loss_single_level_debug(y_true_single_level, y_pred_single_level, return_details=False):
+def compute_detector_loss_single_level_debug(y_true_single_level, y_pred_single_level, return_details=True):
     shape_y_true = tf.shape(y_true_single_level)
     batch_size_loss = shape_y_true[0]
     num_features_total_loss = shape_y_true[4]
@@ -149,6 +150,18 @@ def compute_detector_loss_single_level_debug(y_true_single_level, y_pred_single_
     else:
         return final_total_loss
 
+
+# --- Новая функция-обертка ---
+def wrapped_detector_loss_for_compile(y_true, y_pred):
+    """
+    Обертка для compute_detector_loss_single_level_debug,
+    которая всегда возвращает только скалярный total_loss для model.compile().
+    Детализированные потери будут получаться отдельно в коллбэке.
+    """
+    # Вызываем основную функцию, но всегда просим НЕ возвращать детали
+    # так как Keras ожидает только один скалярный loss
+    scalar_loss = compute_detector_loss_single_level_debug(y_true, y_pred, return_details=False)
+    return scalar_loss
 
 # --- Блок if __name__ == '__main__': для тестирования этого файла ---
 if __name__ == '__main__':
