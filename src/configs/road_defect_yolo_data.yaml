@@ -1,0 +1,14 @@
+# RoadDefectDetector/src/configs/road_defect_yolo_data.yaml
+
+path: data/Detector_Dataset_Ready
+
+train: train/images  # Относительно 'path'. YOLO автоматически найдет ../train/labels/
+val: validation/images    # Относительно 'path'. YOLO автоматически найдет ../validation/labels/
+# test:  # опционально, если есть тестовая выборка (например, test/JPEGImages)
+
+# Количество классов
+nc: 2
+
+# Имена классов (в том же порядке, как class_id в TXT файлах: 0, 1, ...)
+# Должны совпадать с CLASSES_CONFIG в convert_voc_to_yolo.py
+names: ['pit', 'crack']

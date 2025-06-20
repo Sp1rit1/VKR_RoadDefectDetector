@@ -3,12 +3,14 @@
 classifier_model_path: "weights/classifier_trained_model_best.keras"
 
 # --- Укажи здесь, какую модель детектора и какого типа ты хочешь использовать ---
-detector_model_path: "weights/RoadDefectDetector_SingleLevel_P4_FullTrain_v3_single_level_P4_debug_full_train_loss_logger_best.keras" # ИЛИ "weights/detector_v1_best_overall.keras"
+detector_model_path: "weights/RoadDefectDetector_SingleLevel_P4_DebugFocusConfidence_single_level_P4_debug_full_train_loss_logger_best.keras" # ИЛИ "weights/detector_v1_best_overall.keras"
 detector_type: "fpn"  # fpn ИЛИ "single_level"
 
+single_level_detector_model_path: "weights/RoadDefectDetector_SingleLevel_P4_DebugFocusConfidence_single_level_P4_debug_full_train_loss_logger_best.keras"
+
 output_dir: "prediction_results_pipeline"
-default_conf_thresh: 0.3
-default_iou_thresh: 0.3
+default_conf_thresh: 0.15
+default_iou_thresh: 0.5
 default_max_dets: 10
 
 # Параметры Классификатора (для инференса)

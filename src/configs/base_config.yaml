@@ -3,7 +3,7 @@ source_defective_road_img_parent_subdir: "Defective_Road_Images"
 source_normal_road_img_parent_subdir: "Normal_Road_Images"
 source_not_road_img_parent_subdir: "Not_Road_Images"
 dataset:
-  images_dir: "JPEGImages"
+  images_dir: "images"
   annotations_dir: "Annotations"
 logs_base_dir: "logs"
 weights_base_dir: "weights"
