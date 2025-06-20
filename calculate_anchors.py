@@ -46,7 +46,7 @@ except Exception as e:
 
 if not CONFIG_LOAD_SUCCESS_CALC:
     print("ОШИБКА: Не удалось загрузить конфиги. Используются дефолты для calculate_anchors.py.")
-    BASE_CONFIG_CALC.setdefault('dataset', {'images_dir': 'JPEGImages', 'annotations_dir': 'Annotations'})
+    BASE_CONFIG_CALC.setdefault('dataset', {'images_dir': 'images', 'annotations_dir': 'Annotations'})
     DETECTOR_CONFIG_CALC.setdefault('input_shape', [416, 416, 3])
     DETECTOR_CONFIG_CALC.setdefault('fpn_anchor_configs', {
         'P3': {'num_anchors_this_level': 3, 'stride': 8},
@@ -57,7 +57,7 @@ if not CONFIG_LOAD_SUCCESS_CALC:
     DETECTOR_CONFIG_CALC.setdefault('anchor_calc_params', {'area_thresh_p3_end': 0.01, 'area_thresh_p4_end': 0.09})
 
 # --- Глобальные Параметры из Конфигов (для удобства доступа в функциях) ---
-IMAGES_SUBFOLDER_NAME_GLOBAL_CFG = BASE_CONFIG_CALC.get('dataset', {}).get('images_dir', 'JPEGImages')
+IMAGES_SUBFOLDER_NAME_GLOBAL_CFG = BASE_CONFIG_CALC.get('dataset', {}).get('images_dir', 'images')
 ANNOTATIONS_SUBFOLDER_NAME_GLOBAL_CFG = BASE_CONFIG_CALC.get('dataset', {}).get('annotations_dir', 'Annotations')
 CLASSES_LIST_CALC = DETECTOR_CONFIG_CALC.get('classes', ['pit', 'crack'])
 

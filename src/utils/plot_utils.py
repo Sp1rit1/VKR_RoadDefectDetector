@@ -462,7 +462,6 @@ if __name__ == '__main__':
         fpn_level_names=main_fpn_level_names_from_cfg,
         fpn_configs=main_fpn_configs_for_function_call,
         classes_list=main_classes_list_from_cfg,
-        original_gt_boxes_for_reference=original_gt_tuple_main_plot,
         title_prefix="FPN GT Test (plot_utils standalone)"
     )
     print("\n--- Тестирование plot_utils.py завершено ---")

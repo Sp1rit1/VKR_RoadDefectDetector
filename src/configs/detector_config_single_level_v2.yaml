@@ -1,0 +1,89 @@
+# src/configs/detector_config_single_level_v2.yaml
+
+# --- Параметры для ОДНОУРОВНЕВОЙ (P4) модели детектора ---
+# Версия 2: Скорректированные параметры для полноценного обучения
+# с фокусом на улучшение objectness и общего F1.
+
+# Пути к моделям для predict_pipeline.py (могут быть обновлены после обучения)
+classifier_model_path: "weights/classifier_trained_model_best.keras" # Путь к твоему лучшему классификатору
+detector_model_path: "weights/RoadDefectDetector_SingleLevel_P4_v2_best.keras" # Имя для лучшей модели этого запуска
+
+fpn_detector_params: # Структура остается, но используется только один "уровень"
+  model_name_prefix: "RoadDefectDetector_SingleLevel_P4_v2" # Новое имя для этого эксперимента
+  backbone_name: "MobileNetV2"
+  input_shape: [416, 416, 3]
+  classes: ["pit", "crack"] # pit:0, crack:1
+  num_classes: 2
+
+  detector_fpn_levels: ['P4_debug'] # Используем это имя уровня, как в твоих отладочных файлах
+  detector_fpn_strides:
+    P4_debug: 16 # Страйд для уровня P4
+
+  fpn_gt_assignment_scale_ranges: # Для одного уровня это не так критично, но оставляем для консистентности
+    P4_debug: [0, 100000] # Все объекты на этот уровень
+
+  detector_fpn_anchor_configs:
+    P4_debug:
+      num_anchors_this_level: 9 # Твои K-Means якоря для P4
+      anchors_wh_normalized:
+        - [0.1015, 0.0785]
+        - [0.1055, 0.3194]
+        - [0.2808, 0.1379]
+        - [0.5092, 0.1370]
+        - [0.1883, 0.6137]
+        - [0.9054, 0.1660]
+        - [0.1791, 0.9308]
+        - [0.5373, 0.4291]
+        - [0.8651, 0.6298]
+
+
+  # --- НОВЫЕ ПАРАМЕТРЫ ДЛЯ НАЗНАЧЕНИЯ GT ЯКОРЯМ ---
+  iou_positive_threshold: 0.7  # Якорь считается позитивным, если IoU с GT > этого значения
+  iou_ignore_threshold: 0.4    # Якоря с IoU между этим и positive_threshold игнорируются
+
+
+  head_config:
+    head_depth: 2
+    head_conv_filters: 256
+    leaky_relu_alpha: 0.1
+    l2_regularization: 0.00001 # Небольшая L2 регуляризация для обучения на полном датасете
+
+# --- Параметры Обучения (для полноценного обучения на всем датасете) ---
+continue_from_checkpoint: false # Начинаем обучение этой конфигурации с нуля
+path_to_checkpoint: null
+
+unfreeze_backbone: false              # Backbone ЗАМОРОЖЕН для начального обучения "головы"
+finetune_keep_bn_frozen: true         # Будет важно, если позже решим делать fine-tuning
+unfreeze_backbone_layers_from_end: 0  # Не используется, так как unfreeze_backbone = false
+
+batch_size: 8                         # Попробуй 8, если позволяет VRAM, иначе 4
+epochs: 150                           # Для полноценного обучения
+
+initial_learning_rate: 0.0001         # (1e-4) Консервативный начальный LR
+# finetune_learning_rate не используется при unfreeze_backbone: false
+
+# Параметры Callbacks
+early_stopping_patience: 20           # Терпение для EarlyStopping
+reduce_lr_patience: 7                 # Терпение для ReduceLROnPlateau
+reduce_lr_factor: 0.2
+min_lr_on_plateau: 0.0000005 # (5e-7)
+
+use_augmentation: true                # ВКЛЮЧАЕМ АУГМЕНТАЦИЮ для полноценного обучения
+
+# --- Параметры Функции Потерь (СКОРРЕКТИРОВАНЫ) ---
+loss_weights:
+  coordinates: 1.0       # Увеличили вес для координат
+  objectness: 2.0        # Умеренный вес для objectness (Focal Loss будет помогать)
+  no_object: 0.7         # Умеренный вес для фона (Focal Loss будет помогать)
+  classification: 1.5    # Оставляем или можно 1.0
+
+focal_loss_objectness_params:
+  use_focal_loss: true # <<<--- ВКЛЮЧАЕМ Focal Loss для objectness
+  alpha: 0.25            # Стандартное значение для Focal Loss (дает больший вес редкому классу - позитивным якорям)
+  gamma: 2.0             # Стандартное значение для Focal Loss (фокусируется на сложных примерах)
+
+# --- Параметры для Инференса ---
+predict_params:
+  confidence_threshold: 0.2 # Начнем с такого порога для оценки, потом подберем
+  iou_threshold: 0.45
+  max_detections: 100
