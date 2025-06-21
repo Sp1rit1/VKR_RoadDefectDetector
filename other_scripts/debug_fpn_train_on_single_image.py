@@ -46,7 +46,7 @@ try:
 except ImportError as e_imp_pred_utils:
     print(f"ПРЕДУПРЕЖДЕНИЕ (debug_script): Не удалось импортировать decode/nms: {e_imp_pred_utils}")
 try:
-    from utils.main_utils.plot_utils import visualize_fpn_detections_vs_gt
+    from utils.plot_utils import visualize_fpn_detections_vs_gt
 
     _plot_utils_imported_for_preds = True
     print("INFO (debug_script): Функция visualize_fpn_detections_vs_gt импортирована.")

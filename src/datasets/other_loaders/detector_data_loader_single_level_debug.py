@@ -410,7 +410,7 @@ if __name__ == '__main__':
         # Давай предположим, что у нас есть способ проверить импорт plot_utils
         _temp_plot_utils_imported_check = False
         try:
-            from utils.main_utils.plot_utils import visualize_fpn_gt_assignments  # Попытка импорта
+            from utils.plot_utils import visualize_fpn_gt_assignments  # Попытка импорта
 
             _temp_plot_utils_imported_check = True
         except ImportError:

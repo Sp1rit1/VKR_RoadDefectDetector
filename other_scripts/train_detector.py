@@ -66,7 +66,7 @@ except ImportError as e_imp_pred_train:
         return None, None, None, tf.constant([0])
 
 try:
-    from utils.main_utils.plot_utils import visualize_fpn_detections_vs_gt
+    from utils.plot_utils import visualize_fpn_detections_vs_gt
 
     PLOT_UTILS_LOADED_FOR_CALLBACK = True
     print("INFO (train_detector.py): Функция визуализации visualize_fpn_detections_vs_gt импортирована.")

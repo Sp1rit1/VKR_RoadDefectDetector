@@ -42,7 +42,7 @@ try:
     # Для визуализации нам все еще нужна функция, которая может рисовать один уровень.
     # visualize_fpn_detections_vs_gt может быть адаптирована или нам нужна более простая.
     # Давай предположим, что visualize_fpn_detections_vs_gt может принять y_true_tuple из одного элемента.
-    from utils.main_utils.plot_utils import visualize_fpn_detections_vs_gt  # Используем ее, адаптируя вызов
+    from utils.plot_utils import visualize_fpn_detections_vs_gt  # Используем ее, адаптируя вызов
 
     _plot_utils_imported_sdl_fixed = True
     print("INFO (debug_sl_fixed_script): Функция visualize_fpn_detections_vs_gt импортирована.")

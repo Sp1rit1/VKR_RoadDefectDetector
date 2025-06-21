@@ -7,87 +7,106 @@ from sklearn.cluster import KMeans
 import yaml
 import os
 from pathlib import Path
-import random  # Добавлен импорт random
+import random
+import sys
 
-# --- Загрузка Конфигураций ---
+# --- Загрузка Нового Конфигурационного Файла ---
+# Определяем базовый путь к скрипту и пытаемся найти конфиг
 _current_script_root = Path(__file__).resolve().parent
-_src_path_calc = _current_script_root / 'src'
-if not _src_path_calc.exists():
-    _src_path_calc = _current_script_root
-    _base_config_path_calc = _current_script_root / 'configs' / 'base_config.yaml'
-    _detector_config_path_calc = _current_script_root / 'configs' / 'detector_config.yaml'
-    if not _base_config_path_calc.exists():
-        _base_config_path_calc = _current_script_root / 'src' / 'configs' / 'base_config.yaml'
-        _detector_config_path_calc = _current_script_root / 'src' / 'configs' / 'detector_config.yaml'
-else:
-    _base_config_path_calc = _src_path_calc / 'configs' / 'base_config.yaml'
-    _detector_config_path_calc = _src_path_calc / 'configs' / 'detector_config.yaml'
+# Пробуем найти конфиг в src/configs или в корневой папке configs
+_config_path = _current_script_root / 'src' / 'configs' / 'detector_config_v3_standard.yaml'
+if not _config_path.exists():
+    _config_path = _current_script_root / 'configs' / 'detector_config_v3_standard.yaml'
+    if not _config_path.exists():
+        print(f"ОШИБКА: Конфигурационный файл 'detector_config_v3_standard.yaml' не найден.")
+        print(f"Ожидалось по путям: {_current_script_root / 'src' / 'configs' / 'detector_config_v3_standard.yaml'} или {_current_script_root / 'configs' / 'detector_config_v3_standard.yaml'}")
+        sys.exit("Не удалось найти файл конфигурации. Выход.")
 
-BASE_CONFIG_CALC = {}
-DETECTOR_CONFIG_CALC = {}
-CONFIG_LOAD_SUCCESS_CALC = True
+CONFIG = {}
+CONFIG_LOAD_SUCCESS = True
 try:
-    with open(_base_config_path_calc, 'r', encoding='utf-8') as f:
-        BASE_CONFIG_CALC = yaml.safe_load(f)
-    if not isinstance(BASE_CONFIG_CALC, dict): BASE_CONFIG_CALC = {}; CONFIG_LOAD_SUCCESS_CALC = False
-except FileNotFoundError:
-    CONFIG_LOAD_SUCCESS_CALC = False; print(f"ERROR loading base_config: {_base_config_path_calc}")
+    with open(_config_path, 'r', encoding='utf-8') as f:
+        CONFIG = yaml.safe_load(f)
+    if not isinstance(CONFIG, dict):
+        CONFIG = {}
+        CONFIG_LOAD_SUCCESS = False
+        print(f"ОШИБКА: Конфигурационный файл загружен, но его содержимое не является словарем: {_config_path}")
 except Exception as e:
-    CONFIG_LOAD_SUCCESS_CALC = False; print(f"ERROR parsing base_config: {e}")
+    CONFIG_LOAD_SUCCESS = False
+    print(f"ОШИБКА при загрузке или парсинге конфигурационного файла {_config_path}: {e}")
 
-try:
-    with open(_detector_config_path_calc, 'r', encoding='utf-8') as f:
-        DETECTOR_CONFIG_CALC = yaml.safe_load(f)
-    if not isinstance(DETECTOR_CONFIG_CALC, dict): DETECTOR_CONFIG_CALC = {}; CONFIG_LOAD_SUCCESS_CALC = False
-except FileNotFoundError:
-    CONFIG_LOAD_SUCCESS_CALC = False; print(f"ERROR loading detector_config: {_detector_config_path_calc}")
-except Exception as e:
-    CONFIG_LOAD_SUCCESS_CALC = False; print(f"ERROR parsing detector_config: {e}")
+if not CONFIG_LOAD_SUCCESS:
+    sys.exit("Критическая ошибка загрузки конфигурации. Выход.")
 
-if not CONFIG_LOAD_SUCCESS_CALC:
-    print("ОШИБКА: Не удалось загрузить конфиги. Используются дефолты для calculate_anchors.py.")
-    BASE_CONFIG_CALC.setdefault('dataset', {'images_dir': 'images', 'annotations_dir': 'Annotations'})
-    DETECTOR_CONFIG_CALC.setdefault('input_shape', [416, 416, 3])
-    DETECTOR_CONFIG_CALC.setdefault('fpn_anchor_configs', {
-        'P3': {'num_anchors_this_level': 3, 'stride': 8},
-        'P4': {'num_anchors_this_level': 3, 'stride': 16},
-        'P5': {'num_anchors_this_level': 3, 'stride': 32}
-    })
-    DETECTOR_CONFIG_CALC.setdefault('classes', ['pit', 'crack'])
-    DETECTOR_CONFIG_CALC.setdefault('anchor_calc_params', {'area_thresh_p3_end': 0.01, 'area_thresh_p4_end': 0.09})
+# --- Глобальные Параметры из Нового Конфига ---
+# Проверяем наличие необходимых ключей в конфиге
+REQUIRED_KEYS = [
+    'dataset_path', 'train_images_subdir', 'train_annotations_subdir',
+    'class_names', 'input_shape', 'fpn_gt_assignment_area_ranges',
+    'num_anchors_per_level', 'anchor_calc_k_range', 'anchor_analysis_output_dir'
+]
+for key in REQUIRED_KEYS:
+    if key not in CONFIG:
+        sys.exit(f"ОШИБКА: Отсутствует обязательный ключ '{key}' в конфигурационном файле. Выход.")
 
-# --- Глобальные Параметры из Конфигов (для удобства доступа в функциях) ---
-IMAGES_SUBFOLDER_NAME_GLOBAL_CFG = BASE_CONFIG_CALC.get('dataset', {}).get('images_dir', 'images')
-ANNOTATIONS_SUBFOLDER_NAME_GLOBAL_CFG = BASE_CONFIG_CALC.get('dataset', {}).get('annotations_dir', 'Annotations')
-CLASSES_LIST_CALC = DETECTOR_CONFIG_CALC.get('classes', ['pit', 'crack'])
+DATASET_BASE_PATH = Path(CONFIG['dataset_path'])
+TRAIN_IMAGES_SUBDIR = CONFIG['train_images_subdir']
+TRAIN_ANNOTATIONS_SUBDIR = CONFIG['train_annotations_subdir']
+CLASSES_LIST = CONFIG['class_names']
+INPUT_HEIGHT = CONFIG['input_shape'][0]
+INPUT_WIDTH = CONFIG['input_shape'][1]
 
-FPN_ANCHOR_CFGS_CALC = DETECTOR_CONFIG_CALC.get('fpn_anchor_configs', {})
-NUM_ANCHORS_P3_CFG = FPN_ANCHOR_CFGS_CALC.get('P3', {}).get('num_anchors_this_level', 3)
-NUM_ANCHORS_P4_CFG = FPN_ANCHOR_CFGS_CALC.get('P4', {}).get('num_anchors_this_level', 3)
-NUM_ANCHORS_P5_CFG = FPN_ANCHOR_CFGS_CALC.get('P5', {}).get('num_anchors_this_level', 3)
-STRIDE_P3_CFG = FPN_ANCHOR_CFGS_CALC.get('P3', {}).get('stride', 8)
-STRIDE_P4_CFG = FPN_ANCHOR_CFGS_CALC.get('P4', {}).get('stride', 16)
-STRIDE_P5_CFG = FPN_ANCHOR_CFGS_CALC.get('P5', {}).get('stride', 32)
+FPN_GT_ASSIGNMENT_AREA_RANGES = CONFIG['fpn_gt_assignment_area_ranges']
+# Преобразуем диапазоны площадей в удобный для использования формат
+# Например: [[0, 1024], [1024, 9216], [9216, float('inf')]] -> [[0, 1024], [1024, 9216], [9216, 1e10]]
+# Убедимся, что количество диапазонов соответствует количеству уровней FPN P3, P4, P5
+if len(FPN_GT_ASSIGNMENT_AREA_RANGES) != 3:
+    sys.exit("ОШИБКА: 'fpn_gt_assignment_area_ranges' в конфиге должен содержать 3 диапазона для P3, P4, P5. Выход.")
 
-INPUT_HEIGHT_CALC = DETECTOR_CONFIG_CALC.get('input_shape', [416, 416, 3])[0]
-INPUT_WIDTH_CALC = DETECTOR_CONFIG_CALC.get('input_shape', [416, 416, 3])[1]
+# Заменяем float('inf') или очень большие числа на более приемлемое большое число, если нужно
+# Убеждаемся, что пороги последовательны
+parsed_area_ranges = []
+last_upper_bound = 0
+for i, range_pair in enumerate(FPN_GT_ASSIGNMENT_AREA_RANGES):
+    if len(range_pair) != 2:
+         sys.exit(f"ОШИБКА: Диапазон {i} в 'fpn_gt_assignment_area_ranges' должен содержать 2 значения [min, max]. Выход.")
+    lower, upper = range_pair[0], range_pair[1]
+    if lower < last_upper_bound:
+         print(f"ПРЕДУПРЕЖДЕНИЕ: Нижняя граница диапазона {i} ({lower}) меньше верхней границы предыдущего диапазона ({last_upper_bound}). Проверьте 'fpn_gt_assignment_area_ranges'.")
+    if upper == float('inf') or upper > 1e9: # Обрабатываем float('inf') или очень большие числа
+         upper = 1e10 # Используем большое число для практических целей
+    if lower >= upper:
+         print(f"ПРЕДУПРЕЖДЕНИЕ: Нижняя граница диапазона {i} ({lower}) >= верхней границе ({upper}). Проверьте 'fpn_gt_assignment_area_ranges'.")
+    parsed_area_ranges.append([lower, upper])
+    last_upper_bound = upper
 
-AREA_THRESH_P3_END_PARAM_CFG = DETECTOR_CONFIG_CALC.get('anchor_calc_params', {}).get('area_thresh_p3_end', 0.01)
-AREA_THRESH_P4_END_PARAM_CFG = DETECTOR_CONFIG_CALC.get('anchor_calc_params', {}).get('area_thresh_p4_end', 0.09)
+FPN_GT_ASSIGNMENT_AREA_RANGES = parsed_area_ranges
 
-OUTPUT_GRAPHS_DIR_PARAM_CFG = _current_script_root / "graphs" / "anchor_analysis"
-OUTPUT_GRAPHS_DIR_PARAM_CFG.mkdir(parents=True, exist_ok=True)
+NUM_FINAL_ANCHORS_PER_LEVEL = CONFIG['num_anchors_per_level']
+if len(NUM_FINAL_ANCHORS_PER_LEVEL) != 3 or 'P3' not in NUM_FINAL_ANCHORS_PER_LEVEL or 'P4' not in NUM_FINAL_ANCHORS_PER_LEVEL or 'P5' not in NUM_FINAL_ANCHORS_PER_LEVEL:
+    sys.exit("ОШИБКА: 'num_anchors_per_level' в конфиге должен содержать ключи P3, P4, P5. Выход.")
+
+K_RANGE_FOR_ANALYSIS = list(CONFIG.get('anchor_calc_k_range', range(1, 8))) # Дефолтный диапазон, если нет в конфиге
+
+OUTPUT_GRAPHS_DIR = Path(CONFIG['anchor_analysis_output_dir'])
+OUTPUT_GRAPHS_DIR.mkdir(parents=True, exist_ok=True)
 DEFAULT_FINAL_GRAPH_FILENAME = "fpn_anchors_distribution_final.png"
-DEFAULT_K_RANGE = range(1, 8)
 
+
+# --- Вспомогательные функции (без изменений, т.к. логика универсальна) ---
 
 def parse_annotations_for_wh(annotations_dir_arg, images_dir_for_size_fallback_arg, classes_to_consider_arg=None):
+    """Парсит XML аннотации и возвращает список нормализованных пар (ширина, высота) bbox."""
     all_boxes_wh_norm = [];
     print(f"Сканирование аннотаций в: {annotations_dir_arg}")
     xml_files = glob.glob(os.path.join(annotations_dir_arg, "*.xml"))
     if not xml_files: print(f"  ПРЕДУПРЕЖДЕНИЕ: XML файлы не найдены в {annotations_dir_arg}"); return np.array(
         all_boxes_wh_norm)
+    num_processed = 0
     for xml_file in xml_files:
+        num_processed += 1
+        if num_processed % 100 == 0:
+            print(f"  Обработано {num_processed} XML файлов...")
         try:
             tree = ET.parse(xml_file);
             root = tree.getroot()
@@ -107,6 +126,7 @@ def parse_annotations_for_wh(annotations_dir_arg, images_dir_for_size_fallback_a
                     img_path_cand = Path(images_dir_for_size_fallback_arg) / img_fn_node.text
                     if not img_path_cand.exists():
                         base_fn, _ = os.path.splitext(img_fn_node.text)
+                        # Пробуем разные расширения, если оригинальное не найдено
                         for ext_try_fn in ['.jpg', '.png', '.jpeg', '.JPG', '.PNG', '.JPEG']:
                             if (Path(images_dir_for_size_fallback_arg) / (base_fn + ext_try_fn)).exists():
                                 img_path_cand = Path(images_dir_for_size_fallback_arg) / (base_fn + ext_try_fn);
@@ -115,76 +135,141 @@ def parse_annotations_for_wh(annotations_dir_arg, images_dir_for_size_fallback_a
                         try:
                             from PIL import Image;img_pil = Image.open(
                                 img_path_cand);img_w_xml, img_h_xml = img_pil.size;img_pil.close()
-                        except:
-                            print(f"    Не удалось прочитать размеры из {img_path_cand}"); continue
+                        except Exception as img_e:
+                            #print(f"    Не удалось прочитать размеры из изображения {img_path_cand} ({img_e}). Пропуск XML.")
+                            continue # Пропускаем этот XML, если не можем получить размер изображения
                     else:
-                        print(f"    Файл для {xml_file} не найден для размеров. Пропуск."); continue
+                        #print(f"    Файл изображения для {xml_file} не найден для размеров. Пропуск XML.");
+                        continue # Пропускаем этот XML
                 else:
-                    print(f"    Тег <filename> или <size> не найден в {xml_file}. Пропуск."); continue
+                    #print(f"    Тег <filename> или <size> не найден или пуст в {xml_file}. Пропуск XML.");
+                    continue # Пропускаем этот XML
+            if img_w_xml is None or img_h_xml is None:
+                 print(f"    Не удалось получить размеры изображения для {xml_file}. Пропуск XML."); continue
+
             for obj_node in root.findall('object'):
                 cls_nm_node = obj_node.find('name')
                 if cls_nm_node is None or cls_nm_node.text is None: continue
+                # Учитываем только классы, указанные в конфиге
                 if classes_to_consider_arg and cls_nm_node.text not in classes_to_consider_arg: continue
+
                 bndb_node = obj_node.find('bndbox')
                 if bndb_node is None: continue
                 try:
-                    xmin, ymin, xmax, ymax = (float(bndb_node.find(t).text) for t in ['xmin', 'ymin', 'xmax', 'ymax'])
-                except:
-                    continue
-                if xmin >= xmax or ymin >= ymax: continue
-                all_boxes_wh_norm.append([(xmax - xmin) / float(img_w_xml), (ymax - ymin) / float(img_h_xml)])
-        except:
-            print(f"  Ошибка обработки {xml_file}")
+                    # Учитываем, что в VOC формат может быть 1-based indexing, но обычно парсинг дает 0-based
+                    # Убедимся, что координаты не меньше 0 и не больше размера изображения
+                    xmin_str = bndb_node.find('xmin').text
+                    ymin_str = bndb_node.find('ymin').text
+                    xmax_str = bndb_node.find('xmax').text
+                    ymax_str = bndb_node.find('ymax').text
+
+                    xmin = float(xmin_str)
+                    ymin = float(ymin_str)
+                    xmax = float(xmax_str)
+                    ymax = float(ymax_str)
+
+                    # Простая проверка на адекватность координат после парсинга
+                    if xmin < 0 or ymin < 0 or xmax > img_w_xml or ymax > img_h_xml or xmin >= xmax or ymin >= ymax:
+                        #print(f"    Неадекватные координаты bbox в {xml_file}: [{xmin},{ymin},{xmax},{ymax}] при размере {img_w_xml}x{img_h_xml}. Пропуск bbox.")
+                        continue # Пропускаем этот bbox
+
+                except Exception as coord_e:
+                    #print(f"    Ошибка парсинга координат bbox в {xml_file} ({coord_e}). Пропуск bbox.")
+                    continue # Пропускаем этот bbox
+
+                box_w = xmax - xmin
+                box_h = ymax - ymin
+
+                # Нормализуем ширину и высоту к размерам изображения
+                all_boxes_wh_norm.append([box_w / float(img_w_xml), box_h / float(img_h_xml)])
+
+        except Exception as parse_e:
+            print(f"  Ошибка обработки XML файла {xml_file} ({parse_e}). Пропуск.")
+    print(f"Завершено сканирование. Найдено {len(all_boxes_wh_norm)} BBox.")
     return np.array(all_boxes_wh_norm)
 
 
 def iou_for_kmeans(boxes_arg, clusters_arg):
+    """Вычисляет IoU между каждым боксом и каждым кластером (якорем) только по WxH."""
     n = boxes_arg.shape[0];
     k = clusters_arg.shape[0]
+    if n == 0 or k == 0: return np.zeros((n,k))
+
     box_area_calc = boxes_arg[:, 0] * boxes_arg[:, 1];
     cluster_area_calc = clusters_arg[:, 0] * clusters_arg[:, 1]
+
+    # Расширяем массивы для broadcast
+    box_w_reshaped = np.repeat(boxes_arg[:, 0], k).reshape(n, k)
+    box_h_reshaped = np.repeat(boxes_arg[:, 1], k).reshape(n, k)
+    cluster_w_reshaped = np.tile(clusters_arg[:, 0], n).reshape(n, k)
+    cluster_h_reshaped = np.tile(clusters_arg[:, 1], n).reshape(n, k)
+
+    # Пересечение (Minimum) по каждой оси
+    intersection_w_calc = np.minimum(box_w_reshaped, cluster_w_reshaped)
+    intersection_h_calc = np.minimum(box_h_reshaped, cluster_h_reshaped)
+    intersection_area_calc = intersection_w_calc * intersection_h_calc
+
+    # Объединение
     box_area_reshaped_calc = np.repeat(box_area_calc, k).reshape(n, k);
     cluster_area_reshaped_calc = np.tile(cluster_area_calc, n).reshape(n, k)
-    intersection_w_calc = np.minimum(np.repeat(boxes_arg[:, 0], k).reshape(n, k),
-                                     np.tile(clusters_arg[:, 0], n).reshape(n, k))
-    intersection_h_calc = np.minimum(np.repeat(boxes_arg[:, 1], k).reshape(n, k),
-                                     np.tile(clusters_arg[:, 1], n).reshape(n, k))
-    intersection_area_calc = intersection_w_calc * intersection_h_calc
     union_area_calc = box_area_reshaped_calc + cluster_area_reshaped_calc - intersection_area_calc
-    return intersection_area_calc / (union_area_calc + 1e-6)
+
+    # IoU
+    # Избегаем деления на ноль, если и пересечение и объединение равны нулю (случай нулевых боксов/кластеров)
+    iou_calc = np.zeros_like(intersection_area_calc)
+    valid_indices = union_area_calc > 1e-6 # Избегаем деления на ноль
+    iou_calc[valid_indices] = intersection_area_calc[valid_indices] / union_area_calc[valid_indices]
+
+    return iou_calc
 
 
 def avg_iou_calc(boxes_arg, clusters_arg):
+    """Вычисляет средний максимальный IoU для каждого бокса относительно всех кластеров."""
     if clusters_arg.shape[0] == 0 or boxes_arg.shape[0] == 0: return 0.0
+    # Для каждого бокса находим максимальный IoU среди всех кластеров, затем усредняем по всем боксам
     return np.mean(np.max(iou_for_kmeans(boxes_arg, clusters_arg), axis=1))
 
 
 def run_kmeans_analysis_for_group(boxes_wh_group_arg, k_range_arg, group_name_arg):
-    print(f"\nАнализ якорей для '{group_name_arg}' (найдено {boxes_wh_group_arg.shape[0]} рамок):")
-    if boxes_wh_group_arg.shape[0] == 0: print("  Нет рамок.");return {}, {}, {}, []
+    """Выполняет K-Means для группы боксов для каждого K в диапазоне."""
+    print(f"\n--- Анализ якорей для '{group_name_arg}' (найдено {boxes_wh_group_arg.shape[0]} рамок) ---")
+    if boxes_wh_group_arg.shape[0] == 0: print("  Нет рамок для этой группы.");return {}, {}, {}, []
     wcss_res, avg_iou_vals_res, anchors_for_k_res = {}, {}, {};
     valid_k_range_res = []
-    for k_val_arg in k_range_arg:
-        if boxes_wh_group_arg.shape[0] < k_val_arg: print(f"  K={k_val_arg}: Пропуск (мало рамок)"); continue
+    # Сортируем k_range_arg для более логичного вывода графиков
+    sorted_k_range_arg = sorted([k for k in k_range_arg if isinstance(k, int) and k > 0])
+
+    for k_val_arg in sorted_k_range_arg:
+        if boxes_wh_group_arg.shape[0] < k_val_arg:
+            # print(f"  K={k_val_arg}: Пропуск (мало рамок для K-Means)");
+            continue # Пропускаем K, если данных меньше, чем K кластеров
         valid_k_range_res.append(k_val_arg)
-        kmeans = KMeans(n_clusters=k_val_arg, random_state=42, n_init='auto');
+        # Используем n_init='auto' или число (например, 10) для подавления предупреждения в новых версиях sklearn
+        kmeans = KMeans(n_clusters=k_val_arg, random_state=42, n_init=10);
         kmeans.fit(boxes_wh_group_arg)
         wcss_res[k_val_arg] = kmeans.inertia_
+        # Сортируем кластеры (якоря) по их площади для единообразия
         curr_anchors = kmeans.cluster_centers_;
         curr_anchors = curr_anchors[np.argsort(curr_anchors[:, 0] * curr_anchors[:, 1])]
         anchors_for_k_res[k_val_arg] = curr_anchors
         avg_iou_vals_res[k_val_arg] = avg_iou_calc(boxes_wh_group_arg, curr_anchors)
         print(f"  K={k_val_arg}: WCSS={wcss_res[k_val_arg]:.2f}, AvgIoU={avg_iou_vals_res[k_val_arg]:.4f}")
+
+    if not valid_k_range_res:
+         print(f"  Недостаточно рамок для выполнения K-Means для группы '{group_name_arg}' с любым K из диапазона {sorted_k_range_arg}.")
+
     return wcss_res, avg_iou_vals_res, anchors_for_k_res, valid_k_range_res
 
 
 def plot_elbow_and_iou(k_range_plot_arg, wcss_dict_arg, avg_iou_dict_arg, group_name_plot_arg, save_dir_arg):
-    if not k_range_plot_arg or not wcss_dict_arg or not avg_iou_dict_arg: print(
-        f"Нет данных для графика {group_name_plot_arg}"); return
-    wcss_list_plot = [wcss_dict_arg[k_item] for k_item in k_range_plot_arg if k_item in wcss_dict_arg]
-    avg_iou_list_plot = [avg_iou_dict_arg[k_item] for k_item in k_range_plot_arg if k_item in avg_iou_dict_arg]
-    actual_k_range_plot = [k_item for k_item in k_range_plot_arg if k_item in wcss_dict_arg]
-    if not actual_k_range_plot: print(f"Нет валидных K для графика {group_name_plot_arg}"); return
+    """Строит графики WCSS и среднего IoU."""
+    # Фильтруем данные, оставляя только те K, для которых есть результаты
+    actual_k_range_plot = sorted([k for k in k_range_plot_arg if k in wcss_dict_arg and k in avg_iou_dict_arg])
+    if not actual_k_range_plot: print(f"Нет валидных K для построения графика для группы '{group_name_plot_arg}'."); return
+
+    wcss_list_plot = [wcss_dict_arg[k_item] for k_item in actual_k_range_plot]
+    avg_iou_list_plot = [avg_iou_dict_arg[k_item] for k_item in actual_k_range_plot]
+
     fig, ax1 = plt.subplots(figsize=(10, 6));
     color1 = 'tab:red'
     ax1.set_xlabel('Количество якорей (K)');
@@ -202,40 +287,32 @@ def plot_elbow_and_iou(k_range_plot_arg, wcss_dict_arg, avg_iou_dict_arg, group_
     lines1_leg, labels1_leg = ax1.get_legend_handles_labels();
     lines2_leg, labels2_leg = ax2.get_legend_handles_labels()
     ax2.legend(lines1_leg + lines2_leg, labels1_leg + labels2_leg, loc='center right')
-    plt.savefig(save_dir_arg / f"elbow_iou_anchors_{group_name_plot_arg}.png");
-    print(f"График для {group_name_plot_arg} сохранен.")
+    save_path = save_dir_arg / f"elbow_iou_anchors_{group_name_plot_arg}.png"
+    plt.savefig(save_path);
+    print(f"График для '{group_name_plot_arg}' сохранен: {save_path}")
     plt.close()
 
 
-def plot_final_anchors(all_boxes_wh_norm_plot_arg, final_anchors_p3_plot, final_anchors_p4_plot, final_anchors_p5_plot,
-                       save_path_plot_arg):
+def plot_final_anchors(all_boxes_wh_norm_plot_arg, final_anchors_dict_plot_arg, save_path_plot_arg, input_shape_plot_arg):
+    """Строит scatter plot всех bbox и выбранных финальных якорей."""
     plt.figure(figsize=(12, 9));
-    plt.scatter(all_boxes_wh_norm_plot_arg[:, 0], all_boxes_wh_norm_plot_arg[:, 1], alpha=0.3,
-                label='Ground Truth Boxes (W_norm, H_norm)')
+    plt.scatter(all_boxes_wh_norm_plot_arg[:, 0], all_boxes_wh_norm_plot_arg[:, 1], alpha=0.3, s=5, label='Ground Truth Boxes (W_norm, H_norm)')
+
     colors_plot = {'P3': 'red', 'P4': 'green', 'P5': 'purple'};
     markers_plot = {'P3': 'x', 'P4': 's', 'P5': '^'}
+    level_strides = {'P3': 8, 'P4': 16, 'P5': 32} # Предполагаемые страйды
 
-    # Используем глобальные _CFG переменные для легенды, так как они отражают текущие настройки из конфига
-    num_p3_plot = NUM_ANCHORS_P3_CFG;
-    num_p4_plot = NUM_ANCHORS_P4_CFG;
-    num_p5_plot = NUM_ANCHORS_P5_CFG;
-    stride_p3_plot = STRIDE_P3_CFG;
-    stride_p4_plot = STRIDE_P4_CFG;
-    stride_p5_plot = STRIDE_P5_CFG;
+    for level_name, anchors in final_anchors_dict_plot_arg.items():
+        if anchors is not None and anchors.size > 0:
+            plt.scatter(anchors[:, 0], anchors[:, 1],
+                        color=colors_plot.get(level_name, 'black'),
+                        marker=markers_plot.get(level_name, 'o'),
+                        s=150, edgecolor='white', linewidth=1.5,
+                        label=f'{anchors.shape[0]} K-Means Anchors {level_name} (stride {level_strides.get(level_name, "?")})')
 
-    if final_anchors_p3_plot.size > 0: plt.scatter(final_anchors_p3_plot[:, 0], final_anchors_p3_plot[:, 1],
-                                                   color=colors_plot['P3'], marker=markers_plot['P3'], s=100,
-                                                   label=f'{final_anchors_p3_plot.shape[0]} K-Means Anchors P3 (stride {stride_p3_plot})')  # Используем shape[0] для фактического числа
-    if final_anchors_p4_plot.size > 0: plt.scatter(final_anchors_p4_plot[:, 0], final_anchors_p4_plot[:, 1],
-                                                   color=colors_plot['P4'], marker=markers_plot['P4'], s=100,
-                                                   label=f'{final_anchors_p4_plot.shape[0]} K-Means Anchors P4 (stride {stride_p4_plot})')
-    if final_anchors_p5_plot.size > 0: plt.scatter(final_anchors_p5_plot[:, 0], final_anchors_p5_plot[:, 1],
-                                                   color=colors_plot['P5'], marker=markers_plot['P5'], s=100,
-                                                   label=f'{final_anchors_p5_plot.shape[0]} K-Means Anchors P5 (stride {stride_p5_plot})')
-
-    plt.xlabel('Нормализованная Ширина (W_norm)');
-    plt.ylabel('Нормализованная Высота (H_norm)')
-    plt.title(f'Распределение Размеров BBox и Финальных Якорей для FPN');
+    plt.xlabel('Нормализованная Ширина (W / Image_W)');
+    plt.ylabel('Нормализованная Высота (H / Image_H)')
+    plt.title(f'Распределение Размеров BBox и Финальных Якорей для FPN (Image Size: {input_shape_plot_arg[1]}x{input_shape_plot_arg[0]})');
     plt.xlim(0, 1.05);
     plt.ylim(0, 1.05);
     plt.grid(True, linestyle='--');
@@ -245,143 +322,172 @@ def plot_final_anchors(all_boxes_wh_norm_plot_arg, final_anchors_p3_plot, final_
     plt.close()
 
 
-def main_calculate_anchors_entry_point(annotations_dir_arg, images_dir_arg, classes_list_arg,
-                                       area_thresh_p3_arg, area_thresh_p4_arg,
-                                       k_range_list_arg,  # Один общий диапазон K для всех уровней
-                                       num_final_anchors_p3_arg, num_final_anchors_p4_arg, num_final_anchors_p5_arg,
-                                       output_graph_dir_arg, final_plot_save_path_arg):
-    print("--- Расчет и Анализ Якорей для FPN ---")
-    all_gt_boxes_wh_norm_calc = parse_annotations_for_wh(annotations_dir_arg, images_dir_arg, classes_list_arg)
-    if all_gt_boxes_wh_norm_calc.shape[0] == 0: print("Не найдено BBox."); return
-    print(f"Найдено {all_gt_boxes_wh_norm_calc.shape[0]} BBox для анализа.")
+def main():
+    """Основная точка входа для расчета якорей."""
+    print("--- Запуск скрипта calculate_anchors.py ---")
 
-    areas_norm_calc = all_gt_boxes_wh_norm_calc[:, 0] * all_gt_boxes_wh_norm_calc[:, 1]
+    # --- Определяем пути и параметры из конфига ---
+    detector_dataset_ready_abs = (_current_script_root / DATASET_BASE_PATH).resolve()
+
+    annotations_dir_train = str(detector_dataset_ready_abs / TRAIN_ANNOTATIONS_SUBDIR)
+    images_dir_train = str(detector_dataset_ready_abs / TRAIN_IMAGES_SUBDIR)
+
+    classes_list = CLASSES_LIST
+    input_shape = CONFIG['input_shape']
+    area_ranges_normalized = FPN_GT_ASSIGNMENT_AREA_RANGES # [[min_norm_area_P3, max_norm_area_P3], ...]
+
+    num_final_anchors_p3 = NUM_FINAL_ANCHORS_PER_LEVEL['P3']
+    num_final_anchors_p4 = NUM_FINAL_ANCHORS_PER_LEVEL['P4']
+    num_final_anchors_p5 = NUM_FINAL_ANCHORS_PER_LEVEL['P5']
+
+    k_range = K_RANGE_FOR_ANALYSIS
+    output_graph_dir = OUTPUT_GRAPHS_DIR
+    final_plot_save_path = output_graph_dir / DEFAULT_FINAL_GRAPH_FILENAME
+
+    print(f"\nИспользуются данные из ОБУЧАЮЩЕЙ ВЫБОРКИ ({DATASET_BASE_PATH} / {TRAIN_ANNOTATIONS_SUBDIR}) для расчета якорей.")
+    print(f"Целевой входной размер изображения для модели: {input_shape[1]}x{input_shape[0]}.")
+    print(f"Классы для рассмотрения: {classes_list}")
+    print(f"Диапазон K для анализа (для каждой группы FPN): {k_range}")
+    print(f"Предполагаемое количество финальных якорей для каждой группы (из конфига): P3={num_final_anchors_p3}, P4={num_final_anchors_p4}, P5={num_final_anchors_p5}")
+    print(f"Диапазоны нормализованных площадей для разделения на группы FPN (из конфига): {area_ranges_normalized}")
+
+    if not Path(annotations_dir_train).is_dir():
+        print(f"\nОШИБКА: Директория аннотаций не найдена: {annotations_dir_train}")
+        sys.exit("Не найдены данные для расчета якорей. Выход.")
+    if not Path(images_dir_train).is_dir():
+         print(f"\nПРЕДУПРЕЖДЕНИЕ: Директория изображений не найдена: {images_dir_train}. Размеры будут читаться только из XML.")
+         # Продолжаем, но предупреждаем пользователя
+
+    # --- Парсинг всех нормализованных WxH bbox ---
+    all_gt_boxes_wh_norm = parse_annotations_for_wh(annotations_dir_train, images_dir_train, classes_list)
+    if all_gt_boxes_wh_norm.shape[0] == 0:
+        print("Не найдено BBox для анализа. Проверьте датасет и классы в конфиге.")
+        sys.exit("Нет BBox для анализа якорей. Выход.")
+
+    print(f"Найдено {all_gt_boxes_wh_norm.shape[0]} нормализованных BBox для анализа.")
+
+    # --- Разделение BBox на группы по нормализованной площади ---
+    areas_norm = all_gt_boxes_wh_norm[:, 0] * all_gt_boxes_wh_norm[:, 1]
+
+    # Построение гистограммы площадей
     plt.figure(figsize=(10, 6));
-    plt.hist(areas_norm_calc, bins=50, edgecolor='black');
-    plt.title('Гистограмма Норм. Площадей BBox');
-    plt.xlabel('Норм. Площадь');
+    plt.hist(areas_norm, bins=50, edgecolor='black');
+    plt.title(f'Гистограмма Нормализованных Площадей BBox (Total: {all_gt_boxes_wh_norm.shape[0]})');
+    plt.xlabel('Нормализованная Площадь (Area / Image_Area)');
     plt.ylabel('Количество')
-    plt.axvline(area_thresh_p3_arg, color='r', linestyle='dashed', linewidth=1,
-                label=f'P3_end={area_thresh_p3_arg:.3f}')
-    plt.axvline(area_thresh_p4_arg, color='g', linestyle='dashed', linewidth=1,
-                label=f'P4_end={area_thresh_p4_arg:.3f}')
+    # Добавляем линии порогов из конфига
+    colors = ['r', 'g'] # Цвета для порогов между P3/P4 и P4/P5
+    labels = ['P3/P4 Threshold', 'P4/P5 Threshold']
+    threshold_values = [area_ranges_normalized[0][1], area_ranges_normalized[1][1]]
+    for i, thresh in enumerate(threshold_values):
+        if i < len(colors): # Убедимся, что есть цвет для порога
+             plt.axvline(thresh, color=colors[i], linestyle='dashed', linewidth=1, label=f'{labels[i]}={thresh:.4f}')
     plt.legend();
     plt.grid(True, linestyle='--');
-    plt.savefig(output_graph_dir_arg / "gt_box_areas_hist_thresholds.png");
+    hist_save_path = output_graph_dir / "gt_box_areas_hist_thresholds.png"
+    plt.savefig(hist_save_path);
     plt.close()
-    print(f"Гистограмма площадей сохранена.")
+    print(f"Гистограмма нормализованных площадей сохранена: {hist_save_path}")
 
-    boxes_p3_g_list_calc, boxes_p4_g_list_calc, boxes_p5_g_list_calc = [], [], []
-    for i_b_calc, wh_n_b_calc in enumerate(all_gt_boxes_wh_norm_calc):
-        area_cb_calc = areas_norm_calc[i_b_calc]
-        if area_cb_calc < area_thresh_p3_arg:
-            boxes_p3_g_list_calc.append(wh_n_b_calc)
-        elif area_cb_calc < area_thresh_p4_arg:
-            boxes_p4_g_list_calc.append(wh_n_b_calc)
-        else:
-            boxes_p5_g_list_calc.append(wh_n_b_calc)
-    boxes_p3_g_np_calc, boxes_p4_g_np_calc, boxes_p5_g_np_calc = np.array(boxes_p3_g_list_calc), np.array(
-        boxes_p4_g_list_calc), np.array(boxes_p5_g_list_calc)
 
-    print(f"\nРазделение GT рамок по вычисленным порогам:")
-    print(f"  Группа P3 (<{area_thresh_p3_arg:.3f}): {boxes_p3_g_np_calc.shape[0]} рамок")
-    print(f"  Группа P4 ({area_thresh_p3_arg:.3f}-<{area_thresh_p4_arg:.3f}): {boxes_p4_g_np_calc.shape[0]} рамок")
-    print(f"  Группа P5 (>={area_thresh_p4_arg:.3f}): {boxes_p5_g_np_calc.shape[0]} рамок")
+    boxes_by_level = {'P3': [], 'P4': [], 'P5': []}
+    level_names = ['P3', 'P4', 'P5']
 
-    wcss_p3, iou_p3, anchors_p3_k_dict, valid_k_p3 = run_kmeans_analysis_for_group(boxes_p3_g_np_calc, k_range_list_arg,
-                                                                                   "P3")
-    wcss_p4, iou_p4, anchors_p4_k_dict, valid_k_p4 = run_kmeans_analysis_for_group(boxes_p4_g_np_calc, k_range_list_arg,
-                                                                                   "P4")
-    wcss_p5, iou_p5, anchors_p5_k_dict, valid_k_p5 = run_kmeans_analysis_for_group(boxes_p5_g_np_calc, k_range_list_arg,
-                                                                                   "P5")
+    for i_b, wh_n_b in enumerate(all_gt_boxes_wh_norm):
+        area_cb = areas_norm[i_b]
+        assigned_level = None
+        for i, (min_area, max_area) in enumerate(area_ranges_normalized):
+            if min_area <= area_cb < max_area:
+                assigned_level = level_names[i]
+                break
+        if assigned_level:
+            boxes_by_level[assigned_level].append(wh_n_b)
+        # else: BBox не попал ни в один диапазон (крайне маловероятно при правильных диапазонах)
 
-    if wcss_p3: plot_elbow_and_iou(valid_k_p3, wcss_p3, iou_p3, "P3", output_graph_dir_arg)
-    if wcss_p4: plot_elbow_and_iou(valid_k_p4, wcss_p4, iou_p4, "P4", output_graph_dir_arg)
-    if wcss_p5: plot_elbow_and_iou(valid_k_p5, wcss_p5, iou_p5, "P5", output_graph_dir_arg)
+    boxes_p3_np = np.array(boxes_by_level['P3'])
+    boxes_p4_np = np.array(boxes_by_level['P4'])
+    boxes_p5_np = np.array(boxes_by_level['P5'])
 
-    print("\n--- Предлагаемые якоря (W_norm, H_norm) на основе анализа ---")
-    for group_name_calc, k_results_dict_calc, iou_results_dict_calc_print, k_vals_list_calc in zip(
-            ["P3", "P4", "P5"],
-            [anchors_p3_k_dict, anchors_p4_k_dict, anchors_p5_k_dict],
-            [iou_p3, iou_p4, iou_p5],
-            [valid_k_p3, valid_k_p4, valid_k_p5]):
-        print(f"  {group_name_calc}:")
-        if not k_results_dict_calc: print("    # Нет якорей."); continue
-        for k_val_res_loop_calc in k_vals_list_calc:
-            anchors_res_list_loop_calc = k_results_dict_calc.get(k_val_res_loop_calc)
-            avg_iou_val_loop_calc = iou_results_dict_calc_print.get(k_val_res_loop_calc, 0.0)
-            print(f"    # Для K = {k_val_res_loop_calc} (AvgIoU: {avg_iou_val_loop_calc:.4f}):")
-            print(f"    # num_anchors_this_level: {k_val_res_loop_calc}")
-            print(f"    # anchors_wh_normalized:")
-            if anchors_res_list_loop_calc is not None and anchors_res_list_loop_calc.size > 0:
-                for a_res_loop_calc in anchors_res_list_loop_calc: print(
-                    f"    #   - [{a_res_loop_calc[0]:.4f}, {a_res_loop_calc[1]:.4f}]")
+    print(f"\nРазделение GT рамок по нормализованным порогам площадей из конфига:")
+    print(f"  Группа P3 (площадь < {area_ranges_normalized[0][1]:.4f}): {boxes_p3_np.shape[0]} рамок")
+    print(f"  Группа P4 ({area_ranges_normalized[0][1]:.4f} <= площадь < {area_ranges_normalized[1][1]:.4f}): {boxes_p4_np.shape[0]} рамок")
+    print(f"  Группа P5 (площадь >= {area_ranges_normalized[1][1]:.4f}): {boxes_p5_np.shape[0]} рамок")
+
+
+    # --- Анализ K-Means для каждой группы ---
+    wcss_results, iou_results, anchors_results_dict, valid_k_ranges = {}, {}, {}, {}
+
+    wcss_results['P3'], iou_results['P3'], anchors_results_dict['P3'], valid_k_ranges['P3'] = run_kmeans_analysis_for_group(boxes_p3_np, k_range, "P3")
+    wcss_results['P4'], iou_results['P4'], anchors_results_dict['P4'], valid_k_ranges['P4'] = run_kmeans_analysis_for_group(boxes_p4_np, k_range, "P4")
+    wcss_results['P5'], iou_results['P5'], anchors_results_dict['P5'], valid_k_ranges['P5'] = run_kmeans_analysis_for_group(boxes_p5_np, k_range, "P5")
+
+    # Построение графиков для каждой группы
+    if 'P3' in valid_k_ranges and wcss_results['P3']: plot_elbow_and_iou(valid_k_ranges['P3'], wcss_results['P3'], iou_results['P3'], "P3", output_graph_dir)
+    if 'P4' in valid_k_ranges and wcss_results['P4']: plot_elbow_and_iou(valid_k_ranges['P4'], wcss_results['P4'], iou_results['P4'], "P4", output_graph_dir)
+    if 'P5' in valid_k_ranges and wcss_results['P5']: plot_elbow_and_iou(valid_k_ranges['P5'], wcss_results['P5'], iou_results['P5'], "P5", output_graph_dir)
+
+    # --- Вывод предложенных якорей для конфига ---
+    print("\n\n--- Предложенные якоря для detector_config_v3_standard.yaml ---")
+    print(f"# Целевой размер изображения: {input_shape[1]}x{input_shape[0]}")
+    print("# Выберите подходящее количество якорей K для каждого уровня FPN на основе графиков 'Локтя' и Avg IoU.")
+    print("# Затем скопируйте соответствующие нормализованные (W_norm, H_norm) якоря в конфиг в 'anchor_scales' (как базовые размеры).")
+    print("# Убедитесь, что 'num_anchors_per_level' соответствует произведению количества масштабов (scales) и соотношений сторон (ratios), которые вы выберете.")
+    print("# Например, если вы выбираете 3 якоря с нормированными WxH [w1, h1], [w2, h2], [w3, h3], и хотите использовать их как базовые размеры (scales), и задать ratios [0.5, 1.0, 2.0], то итоговое количество якорей на уровне будет 3 * 3 = 9.")
+    print("# Более простой вариант для начала: используйте выбранные K якорей как базовые scales, и оставьте ratios [1.0], тогда num_anchors_per_level = K.")
+
+    # Уровни FPN и соответствующие предполагаемые страйды
+    level_info = {'P3': {'stride': 8}, 'P4': {'stride': 16}, 'P5': {'stride': 32}}
+
+
+    for level_name in ['P3', 'P4', 'P5']:
+        print(f"\n# --- Якоря для {level_name} (предполагаемый stride {level_info[level_name]['stride']}) ---")
+        level_anchors_results = anchors_results_dict.get(level_name, {})
+        level_iou_results = iou_results.get(level_name, {})
+        level_valid_ks = valid_k_ranges.get(level_name, [])
+
+        if not level_valid_ks:
+            print(f"# Нет данных для {level_name}. Невозможно рассчитать якоря.")
+            continue
+
+        # Сортируем K для вывода
+        sorted_ks = sorted(level_valid_ks)
+
+        for k_val in sorted_ks:
+            anchors_norm = level_anchors_results.get(k_val)
+            avg_iou = level_iou_results.get(k_val, 0.0)
+
+            if anchors_norm is not None and anchors_norm.size > 0:
+                print(f"  # Для K = {k_val} якорей (AvgIoU: {avg_iou:.4f}):")
+                print(f"  # num_anchors_per_level: {k_val} (если использовать только эти K якорей без дополнительных ratios)")
+                print(f"  # anchor_scales:")
+                # Выводим нормализованные WxH и примерные пиксельные WxH для целевого input_shape
+                for i, anchor_norm in enumerate(anchors_norm):
+                     anchor_w_px = anchor_norm[0] * input_shape[1] # input_shape: [H, W, C]
+                     anchor_h_px = anchor_norm[1] * input_shape[0]
+                     print(f"  #   - [{anchor_norm[0]:.6f}, {anchor_norm[1]:.6f}] # Примерно {anchor_w_px:.2f}x{anchor_h_px:.2f} px")
+                print(f"  # anchor_ratios: [0.5, 1.0, 2.0] # Типичные соотношения сторон (или выберите другие/оставьте [1.0])")
+                print(f"  # Если использовать K={k_val} якорей как scales И ratios [0.5, 1.0, 2.0], то num_anchors_per_level = {k_val} * 3 = {k_val*3}")
             else:
-                print("    #   # Нет якорей")
-            current_stride_calc = globals().get(f'STRIDE_{group_name_calc}_CFG', 'N/A')
-            print(f"    # stride: {current_stride_calc}\n")
+                print(f"  # Нет рассчитанных якорей для K = {k_val}")
 
-    final_anchors_p3_plot = anchors_p3_k_dict.get(num_final_anchors_p3_arg, np.array([]))
-    final_anchors_p4_plot = anchors_p4_k_dict.get(num_final_anchors_p4_arg, np.array([]))
-    final_anchors_p5_plot = anchors_p5_k_dict.get(num_final_anchors_p5_arg, np.array([]))
-    plot_final_anchors(all_gt_boxes_wh_norm_calc, final_anchors_p3_plot, final_anchors_p4_plot, final_anchors_p5_plot,
-                       final_plot_save_path_arg)
+
+    # --- Построение финального графика с выбранным количеством якорей из конфига ---
+    final_anchors_p3 = anchors_results_dict['P3'].get(num_final_anchors_p3, np.array([]))
+    final_anchors_p4 = anchors_results_dict['P4'].get(num_final_anchors_p4, np.array([]))
+    final_anchors_p5 = anchors_results_dict['P5'].get(num_final_anchors_p5, np.array([]))
+
+    final_anchors_for_plot = {
+        'P3': final_anchors_p3,
+        'P4': final_anchors_p4,
+        'P5': final_anchors_p5
+    }
+
+    plot_final_anchors(all_gt_boxes_wh_norm, final_anchors_for_plot, final_plot_save_path, input_shape)
+
+    print("\n--- Расчет и Анализ Якорей завершен ---")
+    print(f"Графики WCSS/AvgIoU и финального распределения сохранены в: {output_graph_dir}")
+    print("Пожалуйста, проанализируйте графики и выберите окончательное количество и размеры якорей для каждого уровня FPN, затем обновите 'detector_config_v3_standard.yaml'.")
 
 
 if __name__ == "__main__":
-    print("--- Запуск скрипта calculate_anchors.py ---")
-    if not CONFIG_LOAD_SUCCESS_CALC:
-        print("ОШИБКА: Конфигурационные файлы не были загружены. Выход.");
-        exit()
-
-    # --- Определяем пути и параметры для функции main_calculate_anchors_entry_point ---
-    _detector_dataset_ready_path_rel_main_block = DETECTOR_CONFIG_CALC.get('prepared_detector_dataset_path',
-                                                                           "data/Detector_Dataset_Ready")
-    _detector_dataset_ready_abs_main_block = (
-                _current_script_root / _detector_dataset_ready_path_rel_main_block).resolve()
-
-    annotations_dir_train_call = str(
-        _detector_dataset_ready_abs_main_block / "train" / ANNOTATIONS_SUBFOLDER_NAME_GLOBAL_CFG)
-    images_dir_train_call = str(_detector_dataset_ready_abs_main_block / "train" / IMAGES_SUBFOLDER_NAME_GLOBAL_CFG)
-
-    classes_list_call = CLASSES_LIST_CALC
-    num_final_anchors_p3_call = NUM_ANCHORS_P3_CFG
-    num_final_anchors_p4_call = NUM_ANCHORS_P4_CFG
-    num_final_anchors_p5_call = NUM_ANCHORS_P5_CFG
-
-    area_thresh_p3_call = AREA_THRESH_P3_END_PARAM_CFG
-    area_thresh_p4_call = AREA_THRESH_P4_END_PARAM_CFG
-
-    k_range_call = list(DEFAULT_K_RANGE)
-    output_graph_dir_call = OUTPUT_GRAPHS_DIR_PARAM_CFG
-    final_plot_save_path_call = output_graph_dir_call / DEFAULT_FINAL_GRAPH_FILENAME
-
-    print(f"\nИспользуются данные из ОБУЧАЮЩЕЙ ВЫБОРКИ для расчета якорей:")
-    print(f"  Директория аннотаций (XML): {annotations_dir_train_call}")
-    print(f"  Директория изображений (для получения размеров): {images_dir_train_call}")
-    print(f"Диапазон K для анализа (для каждого уровня FPN): {k_range_call}")
-    print(
-        f"Пороги площадей для разделения на группы (из конфига): P3_end={area_thresh_p3_call:.4f}, P4_end={area_thresh_p4_call:.4f}")
-    print(
-        f"Количество якорей для финального графика (из конфига): P3={num_final_anchors_p3_call}, P4={num_final_anchors_p4_call}, P5={num_final_anchors_p5_call}")
-
-    if Path(annotations_dir_train_call).is_dir() and Path(images_dir_train_call).is_dir():
-        main_calculate_anchors_entry_point(
-            annotations_dir_train_call,
-            images_dir_train_call,
-            classes_list_call,
-            area_thresh_p3_call,
-            area_thresh_p4_call,
-            k_range_call,  # <--- ИЗМЕНЕНИЕ: Передаем k_range_call ОДИН РАЗ
-            num_final_anchors_p3_call,
-            num_final_anchors_p4_call,
-            num_final_anchors_p5_call,
-            output_graph_dir_call,
-            final_plot_save_path_call
-        )
-    else:
-        print("\nОШИБКА: Директории для обучающих данных не найдены.")
-        print(f"  Ожидалась Annotations: {annotations_dir_train_call}")
-        print(f"  Ожидалась JPEGImages: {images_dir_train_call}")
-
-    print("\n--- Скрипт calculate_anchors.py завершил работу ---")
+    main()

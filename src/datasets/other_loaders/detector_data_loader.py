@@ -49,7 +49,7 @@ def visualize_fpn_gt_assignments_stub(*args, **kwargs):
 _plot_utils_imported_successfully = False
 visualize_fpn_gt_assignments = visualize_fpn_gt_assignments_stub
 try:
-    from utils.main_utils.plot_utils import visualize_fpn_gt_assignments as viz_func_imported
+    from utils.plot_utils import visualize_fpn_gt_assignments as viz_func_imported
 
     _plot_utils_imported_successfully = True
     visualize_fpn_gt_assignments = viz_func_imported
