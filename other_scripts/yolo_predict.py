@@ -5,7 +5,7 @@ from PIL import Image
 import cv2  # OpenCV для отображения, если нужно
 
 # 1. Загрузка лучшей обученной модели
-model_path = 'training_runs_yolov8/run1_pit_crack2/weights/best.pt'  # ЗАМЕНИ НА СВОЙ ПУТЬ К best.pt
+model_path = '../training_runs_yolov8/run1_pit_crack2/weights/best.pt'  # ЗАМЕНИ НА СВОЙ ПУТЬ К best.pt
 try:
     model = YOLO(model_path)
     print(f"Модель успешно загружена из {model_path}")
@@ -14,7 +14,7 @@ except Exception as e:
     exit()
 
 # 2. Путь к изображению, на котором хочешь сделать предсказание
-image_to_predict_path = 'C:/Users/0001/Desktop/Diplom/RoadDefectDetector/debug_data/China_Drone_000022.jpg'  # ЗАМЕНИ ЭТО
+image_to_predict_path = '/debug_data/China_Drone_000022.jpg'  # ЗАМЕНИ ЭТО
 
 if not os.path.exists(image_to_predict_path):
     print(f"Ошибка: Изображение не найдено по пути {image_to_predict_path}")

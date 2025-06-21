@@ -4,9 +4,7 @@ import numpy as np
 import yaml
 import os
 import sys
-import time
 import random
-import glob
 from pathlib import Path
 import matplotlib.pyplot as plt
 
@@ -20,7 +18,7 @@ if str(_project_root_debug) not in sys.path:
 
 # --- Импорты из твоих модулей ---
 try:
-    from datasets.detector_data_loader import (
+    from datasets.other_loaders.detector_data_loader import (
         load_and_prepare_detector_fpn_py_func,
         FPN_LEVELS_CONFIG_GLOBAL, CLASSES_LIST_GLOBAL_FOR_DETECTOR,
         TARGET_IMG_HEIGHT, TARGET_IMG_WIDTH, NUM_CLASSES_DETECTOR,
@@ -29,8 +27,8 @@ try:
         _images_subdir_name_cfg as DDL_IMAGES_SUBDIR_NAME,
         _annotations_subdir_name_cfg as DDL_ANNOTATIONS_SUBDIR_NAME
     )
-    from models.object_detector import build_object_detector_v2_fpn
-    from losses.detection_losses import compute_detector_loss_v2_fpn
+    from models.other_models.object_detector import build_object_detector_v2_fpn
+    from losses.other_losses.detection_losses import compute_detector_loss_v2_fpn
 
     print("INFO (debug_script): Основные компоненты (data_loader, model, loss) успешно импортированы.")
 except ImportError as e_imp_main:
@@ -48,7 +46,7 @@ try:
 except ImportError as e_imp_pred_utils:
     print(f"ПРЕДУПРЕЖДЕНИЕ (debug_script): Не удалось импортировать decode/nms: {e_imp_pred_utils}")
 try:
-    from utils.plot_utils import visualize_fpn_detections_vs_gt
+    from utils.main_utils.plot_utils import visualize_fpn_detections_vs_gt
 
     _plot_utils_imported_for_preds = True
     print("INFO (debug_script): Функция visualize_fpn_detections_vs_gt импортирована.")
@@ -151,8 +149,8 @@ def main_debug_train_single_random_defective_image():
         master_dataset_root_abs = _project_root_debug / master_dataset_root_abs
     defective_images_parent_dir_name = DDL_BASE_CONFIG.get('source_defective_road_img_parent_subdir',
                                                            "Defective_Road_Images")
-    source_images_dir = Path("C:/Users/0001/Desktop/Diplom/RoadDefectDetector/debug_data")############################################master_dataset_root_abs / defective_images_parent_dir_name / DDL_IMAGES_SUBDIR_NAME
-    source_annotations_dir = Path("C:/Users/0001/Desktop/Diplom/RoadDefectDetector/debug_data")########################################master_dataset_root_abs / defective_images_parent_dir_name / DDL_ANNOTATIONS_SUBDIR_NAME
+    source_images_dir = Path("/debug_data")############################################master_dataset_root_abs / defective_images_parent_dir_name / DDL_IMAGES_SUBDIR_NAME
+    source_annotations_dir = Path("/debug_data")########################################master_dataset_root_abs / defective_images_parent_dir_name / DDL_ANNOTATIONS_SUBDIR_NAME
 
     if not source_images_dir.is_dir() or not source_annotations_dir.is_dir():
         print(f"ОШИБКА: Не найдены директории для '{defective_images_parent_dir_name}'.");

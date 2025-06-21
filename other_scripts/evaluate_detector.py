@@ -3,11 +3,8 @@ import tensorflow as tf
 import numpy as np
 import cv2
 import yaml
-import os
-import glob
 from pathlib import Path
 import argparse
-import json  # Для возможного сохранения результатов в JSON
 
 # --- Добавляем src в sys.path, чтобы скрипт можно было запускать из корня проекта ---
 _project_root_eval = Path(__file__).resolve().parent
@@ -20,7 +17,7 @@ if str(_src_path_eval) not in sys.path:
 # --- Импорты из твоих модулей ---
 CUSTOM_OBJECTS_EVAL = {}
 try:
-    from losses.detection_losses import compute_detector_loss_v2_fpn
+    from losses.other_losses.detection_losses import compute_detector_loss_v2_fpn
 
     CUSTOM_OBJECTS_EVAL['compute_detector_loss_v2_fpn'] = compute_detector_loss_v2_fpn
     print("INFO (evaluate_detector.py): Кастомная функция потерь compute_detector_loss_v2_fpn ЗАГРУЖЕНА.")
@@ -31,7 +28,7 @@ except Exception as e_gen_loss_eval:
     print(f"ПРЕДУПРЕЖДЕНИЕ (evaluate_detector.py): Общая ошибка при импорте функции потерь: {e_gen_loss_eval}.")
 
 try:
-    from datasets.detector_data_loader import parse_xml_annotation  # Нужна для чтения GT аннотаций
+    from datasets.other_loaders.detector_data_loader import parse_xml_annotation  # Нужна для чтения GT аннотаций
 
     print("INFO (evaluate_detector.py): Функция parse_xml_annotation успешно импортирована.")
 except ImportError as e_parse_imp:
@@ -139,7 +136,7 @@ for _lvl_name_eval in DET_FPN_LEVELS_EVAL:
 
 _images_subdir_name_eval = BASE_CONFIG_EVAL.get('dataset', {}).get('images_dir', 'JPEGImages')
 _annotations_subdir_name_eval = BASE_CONFIG_EVAL.get('dataset', {}).get('annotations_dir', 'Annotations')
-_detector_dataset_ready_path_rel_eval = "data/Detector_Dataset_Ready"
+_detector_dataset_ready_path_rel_eval = "../data/Detector_Dataset_Ready"
 DETECTOR_DATASET_READY_ABS_EVAL = (_project_root_eval / _detector_dataset_ready_path_rel_eval).resolve()
 VAL_IMAGE_DIR_EVAL = str(DETECTOR_DATASET_READY_ABS_EVAL / "validation" / _images_subdir_name_eval)
 VAL_ANNOT_DIR_EVAL = str(DETECTOR_DATASET_READY_ABS_EVAL / "validation" / _annotations_subdir_name_eval)

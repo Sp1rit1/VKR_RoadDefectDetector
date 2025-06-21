@@ -6,8 +6,8 @@ import datetime
 
 # --- Импорты из папки src ---
 # Предполагается, что этот скрипт (train_classifier.py) находится в КОРНЕВОЙ папке проекта RoadDefectDetector/
-from src.datasets.classifier_data_loader import create_classifier_datasets
-from src.models.image_classifier import build_classifier_model
+from datasets.main_loaders.classifier_data_loader import create_classifier_datasets
+from models.main_models.image_classifier import build_classifier_model
 
 # --- Загрузка Конфигураций ---
 _current_project_root = os.path.dirname(os.path.abspath(__file__))  # Корень проекта

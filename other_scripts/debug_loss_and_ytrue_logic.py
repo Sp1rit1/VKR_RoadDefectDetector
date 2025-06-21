@@ -1,6 +1,5 @@
 # debug_loss_and_ytrue_logic.py
 import tensorflow as tf
-import numpy as np
 import yaml
 import os
 import sys
@@ -15,7 +14,7 @@ if str(_src_path_debug_loss) not in sys.path:
 
 # --- Импорты из твоих модулей ---
 try:
-    from datasets.detector_data_loader import (
+    from datasets.other_loaders.detector_data_loader import (
         parse_xml_annotation,  # Нужен для чтения GT из XML
         assign_gt_to_fpn_levels_and_encode_by_scale,  # КЛЮЧЕВАЯ ФУНКЦИЯ для y_true
         FPN_LEVELS_CONFIG_GLOBAL,  # Глобальный конфиг уровней FPN
@@ -26,7 +25,7 @@ try:
         # _images_subdir_name_cfg as DDL_IMAGES_SUBDIR,
         # _annotations_subdir_name_cfg as DDL_ANNOTATIONS_SUBDIR
     )
-    from losses.detection_losses import compute_detector_loss_v2_fpn
+    from losses.other_losses.detection_losses import compute_detector_loss_v2_fpn
 
     print("INFO (debug_loss_script): Компоненты из data_loader и losses успешно импортированы.")
 except ImportError as e_imp_main_debug_loss:

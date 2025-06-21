@@ -1,4 +1,5 @@
 # src/utils/plot_utils_v2.py
+import cv2
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import numpy as np
@@ -162,6 +163,7 @@ def visualize_single_level_gt_assignments(
         classes_list_for_drawing
     )
 
+
     if decoded_gt_objects:
         print(f"  Visualizing {len(decoded_gt_objects)} responsible anchors from y_true for {title_prefix}:")
         for obj_info in decoded_gt_objects:
@@ -171,6 +173,7 @@ def visualize_single_level_gt_assignments(
                 box_xywh_norm_viz, img_w_display, img_h_display
             )
             rect_w_viz, rect_h_viz = xmax_viz - xmin_viz, ymax_viz - ymin_viz
+
             color_y_true_viz = 'lime'  # Зеленый для назначенных GT
             rect_assigned_gt = patches.Rectangle((xmin_viz, ymin_viz), rect_w_viz, rect_h_viz,
                                                  linewidth=2, edgecolor=color_y_true_viz, facecolor='none',
@@ -217,6 +220,65 @@ def visualize_single_level_gt_assignments(
 
     plt.tight_layout(pad=0.5)
     plt.show()
+
+
+def draw_detections_on_image_single_level(
+        image_np_bgr,  # Изображение в формате BGR (uint8) для OpenCV
+        boxes_norm_yminxminymaxxmax,  # Нормализованные [ymin, xmin, ymax, xmax]
+        scores,
+        class_ids,
+        class_names_list,  # Список имен классов (например, ['pit', 'crack'])
+        img_disp_width,  # Ширина изображения, на котором рисуем
+        img_disp_height  # Высота
+):
+    """
+    Рисует предсказанные рамки, классы и уверенность на изображении.
+    Возвращает изображение с нарисованными детекциями (BGR).
+    """
+    output_image = image_np_bgr.copy()
+    num_detections = boxes_norm_yminxminymaxxmax.shape[0]
+
+    for i in range(num_detections):
+        if scores[i] < 0.001:  # Очень низкий порог, чтобы почти все показать (если NMS уже применен)
+            continue
+
+        ymin_n, xmin_n, ymax_n, xmax_n = boxes_norm_yminxminymaxxmax[i]
+
+        # Преобразование в пиксельные координаты
+        xmin = int(xmin_n * img_disp_width)
+        ymin = int(ymin_n * img_disp_height)
+        xmax = int(xmax_n * img_disp_width)
+        ymax = int(ymax_n * img_disp_height)
+
+        # Клиппинг координат по границам изображения
+        xmin = max(0, min(xmin, img_disp_width - 1))
+        ymin = max(0, min(ymin, img_disp_height - 1))
+        xmax = max(0, min(xmax, img_disp_width - 1))
+        ymax = max(0, min(ymax, img_disp_height - 1))
+
+        if xmin >= xmax or ymin >= ymax:  # Пропускаем невалидные рамки
+            continue
+
+        class_id = int(class_ids[i])
+        score_val = scores[i]
+
+        label_text = f"Unknown: {score_val:.2f}"
+        color = (128, 128, 128)  # Серый по умолчанию
+
+        if 0 <= class_id < len(class_names_list):
+            label_text = f"{class_names_list[class_id]}: {score_val:.2f}"
+            if class_names_list[class_id] == 'pit':  # Используй точные имена классов
+                color = (0, 0, 255)  # Красный для ям
+            elif class_names_list[class_id] == 'crack':  # или 'treshina'
+                color = (0, 255, 0)  # Зеленый для трещин
+            # Добавь другие классы, если будут
+
+        cv2.rectangle(output_image, (xmin, ymin), (xmax, ymax), color, 2)
+        cv2.putText(output_image, label_text, (xmin, ymin - 10 if ymin - 10 > 10 else ymin + 15),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+
+    return output_image
+
 
 
 if __name__ == '__main__':

@@ -22,10 +22,10 @@ if str(_src_path_debug_train) not in sys.path:
 # --- Импорты ---
 # ... (код импортов) ...
 try:
-    from datasets.detector_data_loader import create_detector_tf_dataset
-    from models.object_detector import build_object_detector_v2_fpn
-    from losses.detection_losses import compute_detector_loss_v2_fpn
-    from datasets.detector_data_loader import (
+    from datasets.other_loaders.detector_data_loader import create_detector_tf_dataset
+    from models.other_models.object_detector import build_object_detector_v2_fpn
+    from losses.other_losses.detection_losses import compute_detector_loss_v2_fpn
+    from datasets.other_loaders.detector_data_loader import (
         TARGET_IMG_HEIGHT as DDL_TARGET_IMG_HEIGHT,
         TARGET_IMG_WIDTH as DDL_TARGET_IMG_WIDTH,
         CLASSES_LIST_GLOBAL_FOR_DETECTOR as DDL_CLASSES_LIST,
@@ -63,7 +63,7 @@ except Exception as e_cfg_dbg_train:
 
 # --- Параметры для отладочного запуска (из argparse и конфигов) ---
 # ... (код определения IMAGES_DIR_FOR_DEBUG_TRAIN и ANNOTATIONS_DIR_FOR_DEBUG_TRAIN) ...
-_detector_dataset_ready_path_rel_dbg_train = "data/Detector_Dataset_Ready"
+_detector_dataset_ready_path_rel_dbg_train = "../data/Detector_Dataset_Ready"
 DETECTOR_DATASET_READY_ABS_DBG_TRAIN = (
             _project_root_debug_train / _detector_dataset_ready_path_rel_dbg_train).resolve()
 _images_subdir_name_from_current_cfg = BASE_CONFIG_DBG_TRAIN.get('dataset', {}).get('images_dir', 'JPEGImages')

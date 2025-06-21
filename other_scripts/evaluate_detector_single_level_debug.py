@@ -4,7 +4,6 @@ import numpy as np
 import cv2
 import yaml
 import os
-import glob
 from pathlib import Path
 import argparse
 import sys
@@ -22,7 +21,7 @@ if str(_project_root_eval_sl) not in sys.path:  # Добавим и корень
 # --- Импорты из твоих модулей ---
 CUSTOM_OBJECTS_EVAL_SL = {}
 try:
-    from losses.detection_losses_single_level_debug import compute_detector_loss_single_level_debug
+    from losses.other_losses.detection_losses_single_level_debug import compute_detector_loss_single_level_debug
 
     CUSTOM_OBJECTS_EVAL_SL = {
         'compute_detector_loss_single_level_debug': compute_detector_loss_single_level_debug}
@@ -35,7 +34,7 @@ except ImportError as e_loss_imp:
 
 SDL_DATA_PARAMS_LOADED_FOR_EVAL = False
 try:
-    from datasets.detector_data_loader_single_level_debug import (
+    from datasets.other_loaders.detector_data_loader_single_level_debug import (
         parse_xml_annotation,
         ANCHORS_WH_P4_DEBUG_SDL_G as ANCHORS_FOR_DECODING,
         GRID_H_P4_DEBUG_SDL_G as GRID_H_FOR_DECODING,
@@ -89,7 +88,7 @@ DETECTOR_SINGLE_LEVEL_CONFIG_EVAL = load_config_eval_sl(_detector_config_single_
 # --- Параметры из Конфигов для Путей и Инференса ---
 _images_subdir_name_eval_sl = BASE_CONFIG_EVAL_SL.get('dataset', {}).get('images_dir', 'JPEGImages')
 _annotations_subdir_name_eval_sl = BASE_CONFIG_EVAL_SL.get('dataset', {}).get('annotations_dir', 'Annotations')
-_detector_dataset_ready_path_rel_eval_sl = "data/Detector_Dataset_Ready"
+_detector_dataset_ready_path_rel_eval_sl = "../data/Detector_Dataset_Ready"
 DETECTOR_DATASET_READY_ABS_EVAL_SL = (_project_root_eval_sl / _detector_dataset_ready_path_rel_eval_sl).resolve()
 VAL_IMAGE_DIR_EVAL_SL = str(DETECTOR_DATASET_READY_ABS_EVAL_SL / "validation" / _images_subdir_name_eval_sl)
 VAL_ANNOT_DIR_EVAL_SL = str(DETECTOR_DATASET_READY_ABS_EVAL_SL / "validation" / _annotations_subdir_name_eval_sl)

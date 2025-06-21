@@ -1,6 +1,5 @@
 # train_detector_single_level_debug.py
 import tensorflow as tf
-import yaml
 import os
 import datetime
 import glob
@@ -9,7 +8,6 @@ import numpy as np
 import time
 import matplotlib.pyplot as plt  # Оставляем для графика истории обучения в конце
 from pathlib import Path
-import random
 
 # --- 1. ОПРЕДЕЛЯЕМ КОРЕНЬ ПРОЕКТА И ДОБАВЛЯЕМ SRC В sys.path ---
 _project_root_sdl_train = Path(__file__).resolve().parent
@@ -21,15 +19,15 @@ if str(_project_root_sdl_train) not in sys.path:
 
 # --- 2. ИМПОРТЫ ИЗ ТВОИХ МОДУЛЕЙ В SRC ---
 try:
-    from datasets.detector_data_loader_single_level_debug import (
+    from datasets.other_loaders.detector_data_loader_single_level_debug import (
         create_detector_single_level_tf_dataset,
         DEBUG_SDL_CONFIG_GLOBAL,  # Отладочный конфиг целиком
         BASE_CONFIG_SDL_GLOBAL,  # Базовый конфиг, загруженный в отладочном загрузчике
         # Остальные специфичные переменные из отладочного загрузчика нам здесь не так важны,
         # так как параметры обучения будут браться из DEBUG_SDL_CONFIG_GLOBAL напрямую
     )
-    from models.object_detector_single_level_debug import build_detector_single_level_p4_debug
-    from losses.detection_losses_single_level_debug import (
+    from models.other_models.object_detector_single_level_debug import build_detector_single_level_p4_debug
+    from losses.other_losses.detection_losses_single_level_debug import (
         compute_detector_loss_single_level_debug,  # Основная функция с return_details
         wrapped_detector_loss_for_compile  # Обертка для model.compile()
     )
@@ -59,7 +57,7 @@ LEARNING_RATE_SDL_TRAIN = DEBUG_SDL_CONFIG_GLOBAL.get('initial_learning_rate', 0
 # и учитывает доступность функции аугментации
 # Переменная USE_AUGMENTATION_SDL_LOADER_FLAG_G должна быть импортирована из detector_data_loader_single_level_debug
 try:
-    from datasets.detector_data_loader_single_level_debug import USE_AUGMENTATION_SDL_LOADER_FLAG_G
+    from datasets.other_loaders.detector_data_loader_single_level_debug import USE_AUGMENTATION_SDL_LOADER_FLAG_G
 except ImportError:  # На случай, если она там не определена глобально
     USE_AUGMENTATION_SDL_LOADER_FLAG_G = DEBUG_SDL_CONFIG_GLOBAL.get('use_augmentation', False)
     print("ПРЕДУПРЕЖДЕНИЕ (train_sdl): Не удалось импортировать USE_AUGMENTATION_SDL_LOADER_FLAG_G, берем из конфига.")
@@ -72,7 +70,7 @@ MIN_LR_ON_PLATEAU_SDL_TRAIN = DEBUG_SDL_CONFIG_GLOBAL.get('min_lr_on_plateau', 1
 DEBUG_CALLBACK_LOG_FREQ_SDL = DEBUG_SDL_CONFIG_GLOBAL.get('debug_callback_log_freq', 1)
 
 # Пути к данным и для сохранения (используем BASE_CONFIG_SDL_GLOBAL, импортированный из отладочного data_loader)
-_detector_dataset_ready_path_rel_sdl = "data/Detector_Dataset_Ready"
+_detector_dataset_ready_path_rel_sdl = "../data/Detector_Dataset_Ready"
 DETECTOR_DATASET_READY_ABS_SDL = _project_root_sdl_train / _detector_dataset_ready_path_rel_sdl
 IMAGES_SUBDIR_NAME_SDL_TRAIN = BASE_CONFIG_SDL_GLOBAL.get('dataset', {}).get('images_dir', 'JPEGImages')
 ANNOTATIONS_SUBDIR_NAME_SDL_TRAIN = BASE_CONFIG_SDL_GLOBAL.get('dataset', {}).get('annotations_dir', 'Annotations')

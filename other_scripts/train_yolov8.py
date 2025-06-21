@@ -4,9 +4,9 @@ import os  # Добавим os для работы с путями, если н�
 
 if __name__ == '__main__':
     # Загружаем pre-trained модель YOLOv8 Nano.
-    model = YOLO('yolov8n.pt')
+    model = YOLO('../yolov8n.pt')
 
-    data_yaml_path = 'src/configs/road_defect_yolo_data.yaml'
+    data_yaml_path = '../src/configs/other_configs/road_defect_yolo_data.yaml'
 
     project_name = 'training_runs_yolov8'
     experiment_name = 'run1_pit_crack2'  # Убедись, что это имя соответствует последнему запуску, или задай новое

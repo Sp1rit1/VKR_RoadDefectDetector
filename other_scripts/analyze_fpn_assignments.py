@@ -1,8 +1,5 @@
 # RoadDefectDetector/analyze_fpn_assignments.py
-import xml.etree.ElementTree as ET
 import numpy as np
-import os
-import glob
 import yaml
 from pathlib import Path
 import matplotlib.pyplot as plt
@@ -19,7 +16,7 @@ if str(_src_path_analyzer) not in sys.path:
 
 # --- Импорты из твоего detector_data_loader ---
 try:
-    from datasets.detector_data_loader import (
+    from datasets.other_loaders.detector_data_loader import (
         calculate_iou_numpy,
         parse_xml_annotation, # <<<--- ДОБАВЛЕН ИМПОРТ ЭТОЙ ФУНКЦИИ
         # Также импортируем глобальные переменные, которые могут понадобиться,
@@ -79,7 +76,7 @@ DETECTOR_CONFIG_ANALYZER = load_config_analyzer_strict(_detector_config_path_ana
 
 # --- Параметры из Конфигов ---
 # Пути к данным (будут выбираться train или validation ниже)
-_detector_dataset_ready_path_rel_analyzer = "data/Detector_Dataset_Ready"
+_detector_dataset_ready_path_rel_analyzer = "../data/Detector_Dataset_Ready"
 DETECTOR_DATASET_READY_ABS_ANALYZER = (_project_root_analyzer / _detector_dataset_ready_path_rel_analyzer).resolve()
 IMAGES_SUBDIR_CFG_ANALYZER = BASE_CONFIG_ANALYZER.get('dataset', {}).get('images_dir', 'JPEGImages')
 ANNOTATIONS_SUBDIR_CFG_ANALYZER = BASE_CONFIG_ANALYZER.get('dataset', {}).get('annotations_dir', 'Annotations')
@@ -298,7 +295,7 @@ if __name__ == "__main__":
             f"Некорректное значение для --dataset_split: {args.dataset_split}. Используйте 'train', 'validation' или 'all'.")
         exit()
 
-    _detector_dataset_ready_path_rel_main = "data/Detector_Dataset_Ready"  # Относительный путь от корня проекта
+    _detector_dataset_ready_path_rel_main = "../data/Detector_Dataset_Ready"  # Относительный путь от корня проекта
     _detector_dataset_ready_root_abs_main_script = (
                 _project_root_analyzer / _detector_dataset_ready_path_rel_main).resolve()
 

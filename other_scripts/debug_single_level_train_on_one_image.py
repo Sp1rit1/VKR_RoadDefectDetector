@@ -1,10 +1,7 @@
 # debug_single_level_train_on_FIXED_image.py
 import tensorflow as tf
 import numpy as np
-import yaml
-import os
 import sys
-import time
 from pathlib import Path
 import matplotlib.pyplot as plt
 
@@ -18,7 +15,7 @@ if str(_project_root_debug_sl_fixed) not in sys.path:
 
 # --- Импорты из твоих ОТЛАДОЧНЫХ (_single_level_debug) модулей ---
 try:
-    from datasets.detector_data_loader_single_level_debug import (
+    from datasets.other_loaders.detector_data_loader_single_level_debug import (
         create_detector_single_level_tf_dataset,  # Функция для создания датасета для одного уровня
         # Глобальные переменные, определенные в detector_data_loader_single_level_debug.py
         # на основе detector_config_single_level_debug.yaml
@@ -28,8 +25,8 @@ try:
         NUM_ANCHORS_P4_DEBUG_SDL_G, ANCHORS_WH_P4_DEBUG_SDL_G,  # Якоря для P4_debug
         FPN_LEVEL_NAME_DEBUG_SDL_G, SINGLE_LEVEL_CONFIG_FOR_ASSIGN_SDL_G  # Имя нашего единственного отладочного уровня (например, 'P4_debug')
     )
-    from models.object_detector_single_level_debug import build_detector_single_level_p4_debug
-    from losses.detection_losses_single_level_debug import compute_detector_loss_single_level_debug
+    from models.other_models.object_detector_single_level_debug import build_detector_single_level_p4_debug
+    from losses.other_losses.detection_losses_single_level_debug import compute_detector_loss_single_level_debug
 
     print("INFO (debug_sl_fixed_script): Отладочные компоненты (data_loader, model, loss) успешно импортированы.")
 except ImportError as e_imp_main_sdl_fixed:
@@ -45,7 +42,7 @@ try:
     # Для визуализации нам все еще нужна функция, которая может рисовать один уровень.
     # visualize_fpn_detections_vs_gt может быть адаптирована или нам нужна более простая.
     # Давай предположим, что visualize_fpn_detections_vs_gt может принять y_true_tuple из одного элемента.
-    from utils.plot_utils import visualize_fpn_detections_vs_gt  # Используем ее, адаптируя вызов
+    from utils.main_utils.plot_utils import visualize_fpn_detections_vs_gt  # Используем ее, адаптируя вызов
 
     _plot_utils_imported_sdl_fixed = True
     print("INFO (debug_sl_fixed_script): Функция visualize_fpn_detections_vs_gt импортирована.")
@@ -59,7 +56,7 @@ except ImportError as e_imp_plot_utils_sdl_fixed:
 # Например, DEBUG_SDL_CONFIG_GLOBAL из этого модуля.
 # Для этого нам нужно импортировать его:
 try:
-    from datasets.detector_data_loader_single_level_debug import DEBUG_SDL_CONFIG_GLOBAL as DEBUG_CONFIG_FROM_LOADER
+    from datasets.other_loaders.detector_data_loader_single_level_debug import DEBUG_SDL_CONFIG_GLOBAL as DEBUG_CONFIG_FROM_LOADER
 except ImportError:
     print("КРИТИЧЕСКАЯ ОШИБКА: Не удалось импортировать DEBUG_SDL_CONFIG_GLOBAL из отладочного загрузчика.")
     DEBUG_CONFIG_FROM_LOADER = {}  # Заглушка
@@ -123,7 +120,7 @@ def main_debug_single_level_train_on_fixed_image_func():
     print("\n--- Отладка ОДНОУРОВНЕВОЙ МОДЕЛИ: Обучение на ОДНОМ ФИКСИРОВАННОМ Изображении ---")
     DEBUG_IMAGE_FILENAME_FIXED = "China_Drone_000180.jpg"  # <<<--- ЗАМЕНИ НА ИМЯ ТВОЕГО ФАЙЛА ИЗОБРАЖЕНИЯ
     DEBUG_XML_FILENAME_FIXED = "China_Drone_000180.xml"  # <<<--- ЗАМЕНИ НА ИМЯ ТВОЕГО XML ФАЙЛА
-    debug_data_folder_fixed = Path("C:/Users/0001/Desktop/Diplom/RoadDefectDetector/debug_data")
+    debug_data_folder_fixed = Path("/debug_data")
 
     fixed_image_path = debug_data_folder_fixed / DEBUG_IMAGE_FILENAME_FIXED
     fixed_xml_path = debug_data_folder_fixed / DEBUG_XML_FILENAME_FIXED

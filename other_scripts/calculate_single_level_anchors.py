@@ -35,7 +35,7 @@ ANNOTATIONS_SUBDIR_NAME_FROM_CONFIG_AC = DETECTOR_CONFIG_AC.get('fpn_detector_pa
 # если 'annotations_dir' лежит в BASE_CONFIG -> dataset
 
 # Путь к РАЗДЕЛЕННОМУ датасету для детектора (берем только TRAIN выборку)
-_detector_dataset_ready_path_rel_ac = "data/Detector_Dataset_Ready" # Это должно быть согласовано с create_data_splits.py
+_detector_dataset_ready_path_rel_ac = "../data/Detector_Dataset_Ready"  # Это должно быть согласовано с create_data_splits.py
 DETECTOR_DATASET_READY_ABS_AC = (_project_root_anchor_calc / _detector_dataset_ready_path_rel_ac).resolve()
 
 # Теперь строим полный путь, используя полученное имя подпапки

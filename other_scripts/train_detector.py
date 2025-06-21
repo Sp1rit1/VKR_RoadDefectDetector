@@ -12,7 +12,6 @@ import numpy as np
 import time
 import matplotlib.pyplot as plt
 from pathlib import Path
-from functools import partial
 
 # --- Определяем корень проекта и добавляем src в sys.path ---
 _project_root = Path(__file__).resolve().parent
@@ -21,7 +20,7 @@ if str(_src_path) not in sys.path:
     sys.path.insert(0, str(_src_path))
 
 # --- Импорты из твоих модулей в src ---
-from datasets.detector_data_loader import (
+from datasets.other_loaders.detector_data_loader import (
     create_detector_tf_dataset,
     FPN_LEVELS_CONFIG_GLOBAL as DDL_FPN_LEVELS_CONFIG,
     CLASSES_LIST_GLOBAL_FOR_DETECTOR as DDL_CLASSES_LIST,
@@ -30,8 +29,8 @@ from datasets.detector_data_loader import (
     TARGET_IMG_HEIGHT as DDL_TARGET_IMG_HEIGHT,  # Для передачи в коллбэк
     TARGET_IMG_WIDTH as DDL_TARGET_IMG_WIDTH, parse_xml_annotation  # Для передачи в коллбэк
 )
-from models.object_detector import build_object_detector_v2_fpn
-from losses.detection_losses import compute_detector_loss_v2_fpn
+from models.other_models.object_detector import build_object_detector_v2_fpn
+from losses.other_losses.detection_losses import compute_detector_loss_v2_fpn
 
 # --- Попытка импорта функций для инференса и визуализации ---
 PREDICT_FUNCS_LOADED_FOR_CALLBACK = False
@@ -67,7 +66,7 @@ except ImportError as e_imp_pred_train:
         return None, None, None, tf.constant([0])
 
 try:
-    from utils.plot_utils import visualize_fpn_detections_vs_gt
+    from utils.main_utils.plot_utils import visualize_fpn_detections_vs_gt
 
     PLOT_UTILS_LOADED_FOR_CALLBACK = True
     print("INFO (train_detector.py): Функция визуализации visualize_fpn_detections_vs_gt импортирована.")
@@ -106,7 +105,7 @@ if not CONFIG_LOAD_SUCCESS_TRAIN_DET:
 # ... (все твои переменные: IMAGES_SUBDIR_NAME_DET, ..., USE_AUGMENTATION_TRAIN_CFG) ...
 IMAGES_SUBDIR_NAME_DET = BASE_CONFIG.get('dataset', {}).get('images_dir', 'JPEGImages')
 ANNOTATIONS_SUBDIR_NAME_DET = BASE_CONFIG.get('dataset', {}).get('annotations_dir', 'Annotations')
-_detector_dataset_ready_path_rel = "data/Detector_Dataset_Ready"
+_detector_dataset_ready_path_rel = "../data/Detector_Dataset_Ready"
 DETECTOR_DATASET_READY_ABS = _project_root / _detector_dataset_ready_path_rel
 _fpn_params_train_global_vars = DETECTOR_CONFIG.get('fpn_detector_params',
                                                     {})  # Изменил имя, чтобы не конфликтовать с локальной в коллбэке

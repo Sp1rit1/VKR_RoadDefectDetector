@@ -3,9 +3,7 @@ import tensorflow as tf
 import numpy as np
 import cv2
 import yaml
-import os
 import argparse
-import time
 from pathlib import Path
 import json
 import sys
@@ -20,7 +18,7 @@ if str(_project_root_pipeline_sl) not in sys.path: sys.path.insert(0, str(_proje
 # --- 2. Импорты из твоих модулей ---
 CUSTOM_OBJECTS_DETECTOR_SL_PIPE = {}
 try:
-    from losses.detection_losses_single_level_debug import compute_detector_loss_single_level_debug
+    from losses.other_losses.detection_losses_single_level_debug import compute_detector_loss_single_level_debug
 
     CUSTOM_OBJECTS_DETECTOR_SL_PIPE = {
         'compute_detector_loss_single_level_debug': compute_detector_loss_single_level_debug}
@@ -33,7 +31,7 @@ SDL_DATA_PARAMS_LOADED_PIPE = False
 # Они должны быть определены в detector_data_loader_single_level_debug.py на основе его конфига
 # И здесь мы их импортируем.
 try:
-    from datasets.detector_data_loader_single_level_debug import (
+    from datasets.other_loaders.detector_data_loader_single_level_debug import (
         ANCHORS_WH_P4_DEBUG_SDL_G as DET_ANCHORS_WH_NORM_PIPE,
         GRID_H_P4_DEBUG_SDL_G as DET_GRID_H_PIPE,
         GRID_W_P4_DEBUG_SDL_G as DET_GRID_W_PIPE,

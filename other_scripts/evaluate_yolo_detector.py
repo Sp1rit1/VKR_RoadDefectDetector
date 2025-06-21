@@ -7,8 +7,8 @@ import os  # и другие необходимые импорты
 
 def run_evaluation():
     # --- ЗДЕСЬ ТВОЙ КОД ДЛЯ ЗАГРУЗКИ МОДЕЛИ И ВАЛИДАЦИИ ---
-    model_path = 'training_runs_yolov8/run1_pit_crack2/weights/best.pt'  # ЗАМЕНИ НА СВОЙ ПУТЬ
-    data_yaml_path = 'src/configs/road_defect_yolo_data.yaml'
+    model_path = '../training_runs_yolov8/run1_pit_crack2/weights/best.pt'  # ЗАМЕНИ НА СВОЙ ПУТЬ
+    data_yaml_path = '../src/configs/other_configs/road_defect_yolo_data.yaml'
 
     try:
         model = YOLO(model_path)

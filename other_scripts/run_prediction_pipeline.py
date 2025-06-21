@@ -21,7 +21,7 @@ if str(_src_path_pipeline) not in sys.path:
 CUSTOM_OBJECTS_PIPELINE = {}
 try:
     # Импортируем ОБЕ функции потерь, так как модель могла быть сохранена с одной из них
-    from losses.detection_losses import compute_detector_loss_v2_fpn
+    from losses.other_losses.detection_losses import compute_detector_loss_v2_fpn
 
     CUSTOM_OBJECTS_PIPELINE['compute_detector_loss_v2_fpn'] = compute_detector_loss_v2_fpn
     print("INFO (run_prediction_pipeline.py): Кастомные функции потерь ЗАГРУЖЕНЫ.")
