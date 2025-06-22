@@ -176,40 +176,73 @@ def encode_box_targets(anchors, matched_gt_boxes):  # anchors - это all_ancho
 # --- Блок 3: Класс-генератор и создание датасета ---
 
 class DataGenerator:
-    def __init__(self, config, all_anchors, is_training=True, debug_mode=False):
+    def __init__(self, config, all_anchors, is_training=True, debug_mode=False, aug_seed=None):
+        # (aug_seed не используется в этой версии, но оставим для совместимости с train_detector, если понадобится)
+        self.logger = logging.getLogger(self.__class__.__name__)
+
         self.config = config
         self.is_training = is_training
         self.debug_mode = debug_mode
+        # self.aug_seed = aug_seed # Не используется напрямую в этой версии __init__
 
+        # --- Настройка путей к данным ---
         dataset_path = Path(config['dataset_path'])
-        if is_training:
-            self.image_dir = dataset_path / config['train_images_subdir']
-            self.annot_dir = dataset_path / config['train_annotations_subdir']
-        else:
-            self.image_dir = dataset_path / config['val_images_subdir']
-            self.annot_dir = dataset_path / config['val_annotations_subdir']
+        self.image_dir = dataset_path / (config['train_images_subdir'] if is_training else config['val_images_subdir'])
+        self.annot_dir = dataset_path / (
+            config['train_annotations_subdir'] if is_training else config['val_annotations_subdir'])
 
-        self.image_paths = sorted([p for p in self.image_dir.glob('*.jpg')])  # Добавил .jpg
-        self.annot_paths = sorted([p for p in self.annot_dir.glob('*.xml')])
+        # --- Поиск и сопоставление файлов изображений и аннотаций ---
+        # Ищем все поддерживаемые форматы изображений
+        image_extensions = ['*.jpg', '*.jpeg', '*.png', '*.bmp']
+        all_image_files = []
+        for ext in image_extensions:
+            all_image_files.extend(list(self.image_dir.glob(ext)))
 
-        # Проверка на соответствие количества изображений и аннотаций
-        if len(self.image_paths) != len(self.annot_paths) or not self.image_paths:
-            logger.warning(f"Несоответствие файлов или пустые папки в {self.image_dir} / {self.annot_dir}")
-            # Можно здесь выбросить исключение или обработать как-то иначе
-            # Для теста оставим возможность работы с пустым списком, __len__ вернет 0
+        all_annot_files = list(self.annot_dir.glob('*.xml'))
+
+        self.logger.info(f"Поиск файлов в: {self.image_dir} (изображения) и {self.annot_dir} (аннотации)")
+        self.logger.info(
+            f"Найдено всего: {len(all_image_files)} файлов изображений и {len(all_annot_files)} файлов аннотаций.")
+
+        # Создаем словари для быстрого доступа по базовому имени (без расширения)
+        image_file_dict = {p.stem: p for p in all_image_files}
+        annot_file_dict = {p.stem: p for p in all_annot_files}
+
+        # Находим базовые имена, которые присутствуют в обоих списках
+        # Используем оператор & для пересечения ключей словарей (dict_keys)
+        matched_basenames = sorted(list(image_file_dict.keys() & annot_file_dict.keys()))
+
+        if not matched_basenames:
+            self.logger.error(
+                f"Не найдено совпадающих имен файлов (с расширениями {image_extensions} и .xml) в {self.image_dir} / {self.annot_dir}. Тренировка/валидация невозможна.")
             self.image_paths = []
             self.annot_paths = []
+            # Инициализируем остальные атрибуты, если __init__ прерывается
+            self.all_anchors = np.empty((0, 4), dtype=np.float32)  # или all_anchors_norm
+            self.num_total_anchors = 0
+            # И другие атрибуты, которые могут понадобиться в __len__ или create_dataset для пустого датасета
+            return
+        else:
+            self.logger.info(f"Найдено {len(matched_basenames)} совпадающих пар изображений/аннотаций.")
+            # Формируем финальные списки путей на основе совпадающих имен
+            self.image_paths = [image_file_dict[basename] for basename in matched_basenames]
+            self.annot_paths = [annot_file_dict[basename] for basename in matched_basenames]
 
+        # --- Параметры из конфига (остаются как в вашей рабочей версии) ---
         self.input_shape = config['input_shape']
         self.class_mapping = {name: i for i, name in enumerate(config['class_names'])}
         self.num_classes = config['num_classes']
         self.pos_iou_thresh = config['anchor_positive_iou_threshold']
-        self.neg_iou_thresh = config['anchor_ignore_iou_threshold']  # <--- Убедимся, что он здесь есть
+        self.neg_iou_thresh = config['anchor_ignore_iou_threshold']
 
-        self.all_anchors = all_anchors
+        self.all_anchors = all_anchors  # Сохраняем переданные якоря
 
-        if self.is_training and config['use_augmentation']:
+        # --- Настройка аугментации (остается как в вашей рабочей версии) ---
+        if self.is_training and config.get('use_augmentation', True):  # Используем get для use_augmentation
             self.augmenter = augmentations.get_detector_train_augmentations(*self.input_shape[:2])
+            if not self.augmenter:
+                self.logger.warning(
+                    "Функция augmentations.get_detector_train_augmentations вернула None. Аугментация будет отключена.")
         else:
             self.augmenter = None
 
@@ -393,18 +426,35 @@ if __name__ == '__main__':
 
     print("\n2. Тест создания валидационного датасета (1 батч, debug_mode=True):")
     try:
-        val_dataset_debug = create_dataset(config, is_training=False, batch_size=1, debug_mode=True)
-        for images_dbg, (y_reg_dbg, y_cls_dbg), debug_info_dict in val_dataset_debug.take(1):
+        # В debug_mode batch_size игнорируется в tf.data.Dataset, возвращается по 1 примеру
+        # Передаем aug_seed, если нужно фиксировать аугментацию для debug
+        val_dataset_debug = create_dataset(config, is_training=False, batch_size=1, debug_mode=True) # aug_seed можно добавить, если нужно
+        for images_dbg, (y_reg_dbg, y_cls_dbg), debug_info_dict in val_dataset_debug.take(1): # Возьмем один пример
             print(f"  - Форма изображения (debug): {images_dbg.shape}")
             print(f"  - Форма y_reg (debug): {y_reg_dbg.shape}")
             print(f"  - Форма y_cls (debug): {y_cls_dbg.shape}")
             print(f"  - Ключи в debug_info: {list(debug_info_dict.keys())}")
-            assert images_dbg.shape[0] == 1  # batch_size = 1
+
+            # ИСПРАВЛЕНО: В debug_mode нет батч-измерения для images_dbg
+            assert images_dbg.shape == tuple(config['input_shape']), \
+                f"Ожидался input_shape {config['input_shape']}, получен {images_dbg.shape}"
+            # y_reg_dbg и y_cls_dbg также не имеют батч-измерения
+            num_total_anchors_debug = generate_all_anchors(config['input_shape'], [8, 16, 32], config['anchor_scales'],
+                                                        config['anchor_ratios']).shape[0]
+            assert y_reg_dbg.shape == (num_total_anchors_debug, 4), \
+                f"Ожидалась форма y_reg ({num_total_anchors_debug}, 4), получена {y_reg_dbg.shape}"
+            assert y_cls_dbg.shape == (num_total_anchors_debug, config['num_classes']), \
+                f"Ожидалась форма y_cls ({num_total_anchors_debug}, {config['num_classes']}), получена {y_cls_dbg.shape}"
+
             assert "image_path" in debug_info_dict
             assert "anchor_labels" in debug_info_dict
+            assert "all_anchors_norm" in debug_info_dict
+            assert debug_info_dict['all_anchors_norm'].shape == (num_total_anchors_debug, 4)
+            assert debug_info_dict['anchor_labels'].shape == (num_total_anchors_debug,)
+            assert debug_info_dict['max_iou_per_anchor'].shape == (num_total_anchors_debug,)
+
         print("  - [SUCCESS] Тест 2 пройден.")
     except Exception as e:
         print(f"  - [ERROR] Ошибка в тесте 2: {e}")
         import traceback
-
         traceback.print_exc()

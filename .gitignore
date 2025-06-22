@@ -1,5 +1,6 @@
 # Виртуальное окружение Python
 .venv/
+.venv_py310/
 venv/
 ENV/
 env/

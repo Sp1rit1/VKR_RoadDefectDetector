@@ -43,7 +43,6 @@ anchor_scales: [1.0, 1.2599, 1.5874] # Соответствует 2^(0), 2^(1/3)
 # 3 scales * 3 ratios = 9. Это значение должно быть одинаковым для всех уровней.
 num_anchors_per_level: 21
 
-# --- Параметры FPN (Feature Pyramid Network) ---
 fpn_filters: 256
 
 # --- Параметры назначения GT (Ground Truth Assignment) ---
