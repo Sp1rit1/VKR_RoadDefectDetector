@@ -1,5 +1,4 @@
 import sys
-
 import cv2
 import yaml
 import numpy as np
@@ -14,7 +13,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 try:
     from src.datasets.data_loader_v3_standard import (
-        generate_all_anchors, parse_voc_xml, assign_gt_to_anchors, encode_box_targets
+        generate_all_anchors, parse_voc_xml, assign_gt_to_anchors
     )
     from src.utils import plot_utils
     from src.datasets import augmentations
@@ -28,21 +27,23 @@ logger = logging.getLogger(__name__)
 
 
 # --- Основная функция отладки ---
-
 def debug_one_image(config, image_name, use_augmentation=True, aug_seed=None, top_k_positive=5, top_k_ignored=5):
     logger.info(f"--- Запуск детального анализа для: {image_name} ---")
 
-    # --- Шаг 1: Загрузка исходных данных ---
     dataset_path = Path(config['dataset_path'])
     image_path = dataset_path / config['train_images_subdir'] / image_name
     annot_path = dataset_path / config['train_annotations_subdir'] / (Path(image_name).stem + ".xml")
-    # ... (проверка существования файлов) ...
+    if not image_path.exists():
+        image_path = dataset_path / config['val_images_subdir'] / image_name
+        annot_path = dataset_path / config['val_annotations_subdir'] / (Path(image_name).stem + ".xml")
+        if not image_path.exists():
+            logger.error(f"Изображение '{image_name}' не найдено ни в train, ни в validation.")
+            return
 
     image_original = cv2.cvtColor(cv2.imread(str(image_path)), cv2.COLOR_BGR2RGB)
     h_orig, w_orig, _ = image_original.shape
     gt_boxes_original, gt_class_names_original = parse_voc_xml(annot_path)
 
-    # --- Шаг 2: Ресайз и Аугментация ---
     h_target, w_target = config['input_shape'][:2]
     image_resized = cv2.resize(image_original, (w_target, h_target))
 
@@ -61,57 +62,52 @@ def debug_one_image(config, image_name, use_augmentation=True, aug_seed=None, to
                               class_labels_for_albumentations=gt_class_names_original)
         image_augmented = augmented['image']
         gt_boxes_augmented = augmented['bboxes']
+        gt_class_names_augmented = augmented['class_labels_for_albumentations']
     else:
         logger.info("Аугментация: ВЫКЛЮЧЕНА")
         image_augmented = image_resized
         gt_boxes_augmented = gt_boxes_resized
+        gt_class_names_augmented = gt_class_names_original
 
-    # --- Шаг 3: Генерация и назначение якорей ---
     all_anchors_norm = generate_all_anchors(config['input_shape'], [8, 16, 32], config['anchor_scales'],
                                             config['anchor_ratios'])
-
     gt_boxes_aug_norm = np.array(gt_boxes_augmented, dtype=np.float32) / np.array(
-        [w_target, h_target, w_target, h_target])
+        [w_target, h_target, w_target, h_target]) if gt_boxes_augmented else np.empty((0, 4))
 
-    anchor_labels, _, max_iou_per_anchor = assign_gt_to_anchors(
-        gt_boxes_aug_norm, all_anchors_norm,
-        config['anchor_positive_iou_threshold'],
-        config['anchor_ignore_iou_threshold']
-    )
+    anchor_labels, _, max_iou_per_anchor = assign_gt_to_anchors(gt_boxes_aug_norm, all_anchors_norm,
+                                                                config['anchor_positive_iou_threshold'],
+                                                                config['anchor_ignore_iou_threshold'])
 
-    # --- Шаг 4: Сбор информации для визуализации ---
     all_anchors_pixels = all_anchors_norm * np.array([w_target, h_target, w_target, h_target])
     positive_indices = np.where(anchor_labels == 1)[0]
     ignored_indices = np.where(anchor_labels == 0)[0]
-
     sorted_pos_indices = positive_indices[np.argsort(-max_iou_per_anchor[positive_indices])]
     sorted_ign_indices = ignored_indices[np.argsort(-max_iou_per_anchor[ignored_indices])]
-
     top_pos_info = [{'bbox': all_anchors_pixels[i], 'type': 'positive', 'iou': max_iou_per_anchor[i]} for i in
                     sorted_pos_indices[:top_k_positive]]
     top_ign_info = [{'bbox': all_anchors_pixels[i], 'type': 'ignored', 'iou': max_iou_per_anchor[i]} for i in
                     sorted_ign_indices[:top_k_ignored]]
     anchors_to_plot = top_pos_info + top_ign_info
 
-    # --- Шаг 5: Визуализация ---
     fig, axes = plt.subplots(1, 2, figsize=(18, 9))
     fig.suptitle(f"Детальный анализ: {image_name} | Сид аугментации: {aug_seed}", fontsize=16)
 
-    # График 1
     plot_utils.plot_original_gt(axes[0], image_original,
                                 [{'bbox': b, 'class': l} for b, l in zip(gt_boxes_original, gt_class_names_original)])
 
-    # График 2
     axes[1].set_title(f"2. Аугментация + Топ-{top_k_positive} Pos / Топ-{top_k_ignored} Ign якорей")
     plot_utils.plot_image(image_augmented, axes[1])
-    plot_utils.plot_boxes_on_image(axes[1], gt_boxes_augmented, labels=gt_class_names_original, color_index_base=10,
-                                   linewidth=3)
+
+    # ===> ИСПРАВЛЕННЫЙ ВЫЗОВ ЗДЕСЬ <===
+    # Мы используем plot_augmented_gt, которая уже знает, что box_type='gt'
+    plot_utils.plot_augmented_gt(axes[1], image_augmented, [{'bbox': b, 'class': l} for b, l in
+                                                            zip(gt_boxes_augmented, gt_class_names_augmented)])
+
     plot_utils.plot_specific_anchors_on_image(axes[1], image_augmented, anchors_to_plot, title="")
 
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-    plot_utils.show_plot()
+    plt.show()
 
-    # --- Шаг 6: Вывод в консоль ---
     print("\n" + "=" * 80)
     print("ДЕТАЛЬНАЯ ИНФОРМАЦИЯ О ЛУЧШИХ ЯКОРЯХ".center(80))
     print("=" * 80)
@@ -128,7 +124,6 @@ def debug_one_image(config, image_name, use_augmentation=True, aug_seed=None, to
     print("=" * 80 + "\n")
 
 
-# --- Запуск отладки ---
 if __name__ == '__main__':
     try:
         config_path = PROJECT_ROOT / "src" / "configs" / "detector_config_v3_standard.yaml"
@@ -138,7 +133,7 @@ if __name__ == '__main__':
         logger.error(f"Конфигурационный файл не найден по пути: {config_path}")
         sys.exit(1)
 
-    IMAGE_TO_DEBUG = "China_Drone_000091.jpg"
+    IMAGE_TO_DEBUG = "China_Drone_000180.jpg"
     USE_AUGMENTATION = True
     AUGMENTATION_SEED = 42
     TOP_K_POSITIVE = 10

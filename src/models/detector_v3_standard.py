@@ -1,59 +1,80 @@
 import tensorflow as tf
 from tensorflow.keras.layers import (
-    Conv2D, BatchNormalization, ReLU, Add, UpSampling2D, Input, Reshape, Lambda
+    Conv2D, BatchNormalization, ReLU, Add, UpSampling2D, Input, Lambda
 )
 from tensorflow.keras.applications import EfficientNetB0
 from tensorflow.keras import Model
 import math
 
 
-# --- Model Architecture ---
+# --- Новый класс модели с кастомным train_step ---
+class DetectorModel(Model):
+    def __init__(self, inputs, outputs, **kwargs):
+        super().__init__(inputs=inputs, outputs=outputs, **kwargs)
+        # loss_fn и optimizer будут установлены через model.compile()
+        self.loss_fn = None
+        self.optimizer = None
+        self.loss_tracker = tf.keras.metrics.Mean(name="loss")
+
+    def compile(self, optimizer, loss, **kwargs):
+        super().compile(**kwargs)
+        self.optimizer = optimizer
+        self.loss_fn = loss
+
+    @property
+    def metrics(self):
+        # Мы отслеживаем только loss.
+        return [self.loss_tracker]
+
+    def train_step(self, data):
+        # Распаковываем данные. Наш data_loader возвращает (images, y_true)
+        images, y_true = data
+
+        with tf.GradientTape() as tape:
+            # 1. Делаем предсказание (y_pred)
+            y_pred = self(images, training=True)
+            # 2. Вычисляем loss
+            # Наша loss_fn уже знает, как работать с кортежем y_true и списком y_pred
+            loss = self.loss_fn(y_true, y_pred)
+
+        # 3. Вычисляем градиенты и обновляем веса
+        trainable_vars = self.trainable_variables
+        gradients = tape.gradient(loss, trainable_vars)
+        self.optimizer.apply_gradients(zip(gradients, trainable_vars))
+
+        # Обновляем метрику loss
+        self.loss_tracker.update_state(loss)
+
+        # Возвращаем словарь с текущим состоянием метрик
+        return {"loss": self.loss_tracker.result()}
+
+
+# --- Вспомогательные функции для построения модели ---
 
 def build_retinanet_head(fpn_filters, num_anchors, num_classes, level_name):
     """
     Создает общую "голову" RetinaNet и отдельные ветки для классификации и регрессии.
-    Это более каноничная и эффективная реализация.
     """
     input_tensor = Input(shape=(None, None, fpn_filters), name=f'head_input_{level_name}')
 
-    # --- Общая часть головы (Shared Layers) ---
     shared_head = input_tensor
     for i in range(4):
-        shared_head = Conv2D(
-            fpn_filters, 3, 1, padding='same',
-            kernel_initializer='he_normal', name=f'{level_name}_head_shared_conv_{i}'
-        )(shared_head)
+        shared_head = Conv2D(fpn_filters, 3, 1, 'same', kernel_initializer='he_normal',
+                             name=f'{level_name}_head_shared_conv_{i}')(shared_head)
         shared_head = BatchNormalization(name=f'{level_name}_head_shared_bn_{i}')(shared_head)
         shared_head = ReLU(name=f'{level_name}_head_shared_relu_{i}')(shared_head)
 
-    # --- Ветка Классификации (Classification Subnet) ---
-    cls_head = Conv2D(
-        num_anchors * num_classes, 3, 1, padding='same',
-        kernel_initializer='he_normal',
-        bias_initializer=tf.keras.initializers.Constant(math.log((1 - 0.01) / 0.01)),
-        name=f'{level_name}_cls_conv'
-    )(shared_head)
-
-    # ИСПОЛЬЗУЕМ LAMBDA ДЛЯ ПРАВИЛЬНОГО И ДИНАМИЧЕСКОГО RESHAPE
-    # Reshape в (batch, H, W, num_anchors, num_classes)
+    cls_head = Conv2D(num_anchors * num_classes, 3, 1, 'same', kernel_initializer='he_normal',
+                      bias_initializer=tf.keras.initializers.Constant(math.log((1 - 0.01) / 0.01)),
+                      name=f'{level_name}_cls_conv')(shared_head)
     cls_output = Lambda(
         lambda x: tf.reshape(x, [tf.shape(x)[0], tf.shape(x)[1], tf.shape(x)[2], num_anchors, num_classes]),
-        name=f'{level_name}_cls_output'
-    )(cls_head)
+        name=f'{level_name}_cls_output')(cls_head)
 
-    # --- Ветка Регрессии (Regression Subnet) ---
-    reg_head = Conv2D(
-        num_anchors * 4, 3, 1, padding='same',
-        kernel_initializer='he_normal',
-        name=f'{level_name}_reg_conv'
-    )(shared_head)
-
-    # ИСПОЛЬЗУЕМ LAMBDA ДЛЯ ПРАВИЛЬНОГО И ДИНАМИЧЕСКОГО RESHAPE
-    # Reshape в (batch, H, W, num_anchors, 4)
-    reg_output = Lambda(
-        lambda x: tf.reshape(x, [tf.shape(x)[0], tf.shape(x)[1], tf.shape(x)[2], num_anchors, 4]),
-        name=f'{level_name}_reg_output'
-    )(reg_head)
+    reg_head = Conv2D(num_anchors * 4, 3, 1, 'same', kernel_initializer='he_normal', name=f'{level_name}_reg_conv')(
+        shared_head)
+    reg_output = Lambda(lambda x: tf.reshape(x, [tf.shape(x)[0], tf.shape(x)[1], tf.shape(x)[2], num_anchors, 4]),
+                        name=f'{level_name}_reg_output')(reg_head)
 
     head_model = Model(inputs=input_tensor, outputs=[reg_output, cls_output], name=f'prediction_head_{level_name}')
     return head_model
@@ -63,6 +84,7 @@ def build_detector_v3_standard(config):
     """
     Строит стандартную модель детектора с EfficientNetB0, FPN и
     ОБЩИМИ (shared) головами предсказаний в стиле RetinaNet.
+    Возвращает кастомную модель с переопределенным train_step.
     """
     input_shape = config['input_shape']
     num_classes = config['num_classes']
@@ -72,9 +94,7 @@ def build_detector_v3_standard(config):
 
     input_tensor = Input(shape=input_shape, name='input_image')
 
-    base_model = EfficientNetB0(
-        input_tensor=input_tensor, include_top=False, weights='imagenet'
-    )
+    base_model = EfficientNetB0(input_tensor=input_tensor, include_top=False, weights='imagenet')
     if freeze_backbone:
         base_model.trainable = False
         print("EfficientNetB0 backbone is FROZEN.")
@@ -84,13 +104,9 @@ def build_detector_v3_standard(config):
 
     c3_layer_name, c4_layer_name, c5_layer_name = 'block3b_add', 'block4c_add', 'block6d_add'
 
-    try:
-        c3_output = base_model.get_layer(c3_layer_name).output
-        c4_output = base_model.get_layer(c4_layer_name).output
-        c5_output = base_model.get_layer(c5_layer_name).output
-    except ValueError as e:
-        print(f"ERROR: Не найдены слои backbone. Проверьте имена в `build_detector_v3_standard`.\n{e}")
-        raise
+    c3_output = base_model.get_layer(c3_layer_name).output
+    c4_output = base_model.get_layer(c4_layer_name).output
+    c5_output = base_model.get_layer(c5_layer_name).output
 
     c3_lateral = Conv2D(fpn_filters, 1, 1, 'same', name='fpn_c3_lateral', kernel_initializer='he_normal')(c3_output)
     c4_lateral = Conv2D(fpn_filters, 1, 1, 'same', name='fpn_c4_lateral', kernel_initializer='he_normal')(c4_output)
@@ -118,8 +134,8 @@ def build_detector_v3_standard(config):
 
     outputs = [reg_p3, reg_p4, reg_p5, cls_p3, cls_p4, cls_p5]
 
-    model = Model(inputs=input_tensor, outputs=outputs, name=config.get('model_name', 'RetinaNetDetector'))
-    print(f"Модель '{model.name}' успешно собрана.")
+    model = DetectorModel(inputs=input_tensor, outputs=outputs, name=config.get('model_name', 'RetinaNetDetector'))
+    print(f"Модель '{model.name}' (с кастомным train_step) успешно собрана.")
     return model
 
 
@@ -131,14 +147,14 @@ if __name__ == '__main__':
         'input_shape': [512, 512, 3],
         'num_classes': 2,
         'fpn_filters': 256,
-        'num_anchors_per_level': 21,
+        'num_anchors_per_level': 21,  # <--- Актуальное значение
         'freeze_backbone': True,
         'model_name': 'Test_DetectorV3_RetinaNet'
     }
 
     try:
         model = build_detector_v3_standard(test_config)
-        model.summary(line_length=120) # Раскомментируй, если хочешь посмотреть детальную структуру
+        model.summary(line_length=150)
 
         BATCH_SIZE = 2
         dummy_input = tf.random.normal((BATCH_SIZE, *test_config['input_shape']))
@@ -147,7 +163,6 @@ if __name__ == '__main__':
         print("\n--- Проверка форм выходных тензоров ---")
         strides = [8, 16, 32]
         num_levels = 3
-
         for i in range(num_levels):
             level_name = f"P{i + 3}"
             H, W = test_config['input_shape'][0] // strides[i], test_config['input_shape'][1] // strides[i]

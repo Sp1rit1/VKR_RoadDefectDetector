@@ -88,7 +88,7 @@ warmup_epochs: 3
 epochs_phase1: 40
 epochs_phase2: 20
 batch_size: 8
-use_augmentation: true
+use_augmentation: false
 
 # --- Пути для логов и весов ---
 log_dir: "logs/detector_v3_retinanet"
