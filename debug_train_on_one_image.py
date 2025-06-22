@@ -141,35 +141,39 @@ def train_on_one_image_final_attempt(main_config, predict_config, image_name, us
     else:
         logger.info("Аугментация для обучающего примера: ВЫКЛЮЧЕНА")
 
+    # --- Загрузка и подготовка ОДНОГО изображения и его аннотации ---
     dataset_path = Path(main_config['dataset_path'])
     image_path_to_use = dataset_path / main_config['train_images_subdir'] / image_name
     annot_path_to_use = dataset_path / main_config['train_annotations_subdir'] / (Path(image_name).stem + ".xml")
     if not image_path_to_use.exists():
         image_path_to_use = dataset_path / main_config['val_images_subdir'] / image_name
         annot_path_to_use = dataset_path / main_config['val_annotations_subdir'] / (Path(image_name).stem + ".xml")
-        if not image_path_to_use.exists(): logger.error(f"Файл {image_name} не найден."); return
+        if not image_path_to_use.exists():
+            logger.error(f"Файл {image_name} не найден.");
+            return
 
     image_original = cv2.cvtColor(cv2.imread(str(image_path_to_use)), cv2.COLOR_BGR2RGB)
     h_orig, w_orig, _ = image_original.shape
     gt_boxes_original_pixels, gt_class_names_original = parse_voc_xml(annot_path_to_use)
+
     h_target, w_target = main_config['input_shape'][:2]
     image_resized_uint8 = cv2.resize(image_original, (w_target, h_target))
     gt_boxes_resized_pixels = [
         [(b[0] / w_orig) * w_target, (b[1] / h_orig) * h_target, (b[2] / w_orig) * w_target, (b[3] / h_orig) * h_target]
         for b in gt_boxes_original_pixels]
 
+    # Применяем аугментацию, если нужно
     image_for_training_final_uint8, gt_boxes_for_training_final_pixels, gt_labels_for_training_final = image_resized_uint8, gt_boxes_resized_pixels, gt_class_names_original
     if use_augmentation_for_train:
-        # np.random.seed(seed_for_this_run) уже установлен глобально
         augmenter = augmentations.get_detector_train_augmentations(h_target, w_target)
-        class_names_for_aug_train = [main_config['class_names'][cid] if isinstance(cid, int) else cid for cid in
-                                     gt_class_names_original]
         augmented = augmenter(image=image_resized_uint8, bboxes=gt_boxes_resized_pixels,
-                              class_labels_for_albumentations=class_names_for_aug_train)
+                              class_labels_for_albumentations=gt_class_names_original)
         image_for_training_final_uint8, gt_boxes_for_training_final_pixels, gt_labels_for_training_final = augmented[
             'image'], augmented['bboxes'], augmented['class_labels_for_albumentations']
 
     image_for_training_norm = (image_for_training_final_uint8.astype(np.float32) / 255.0)
+
+    # --- Генерация y_true (целевых значений) ---
     all_anchors_np = generate_all_anchors(main_config['input_shape'], [8, 16, 32], main_config['anchor_scales'],
                                           main_config['anchor_ratios'])
     gt_boxes_norm_assign = np.array(gt_boxes_for_training_final_pixels, dtype=np.float32) / np.array(
@@ -177,45 +181,68 @@ def train_on_one_image_final_attempt(main_config, predict_config, image_name, us
     gt_class_ids_assign = np.array([main_config['class_names'].index(name) for name in gt_labels_for_training_final],
                                    dtype=np.int32) if gt_labels_for_training_final else np.empty((0,), dtype=np.int32)
 
-    anchor_labels, matched_gt_boxes_for_all_anchors, matched_gt_class_ids_for_all_anchors, _ = assign_gt_to_anchors(
+    anchor_labels, matched_gt_boxes, matched_gt_class_ids, _ = assign_gt_to_anchors(
         gt_boxes_norm_assign, gt_class_ids_assign, all_anchors_np,
         main_config['anchor_positive_iou_threshold'], main_config['anchor_ignore_iou_threshold']
     )
 
-    y_true_cls_np, y_true_reg_np = np.zeros((len(all_anchors_np), main_config['num_classes']),
-                                            dtype=np.float32), np.zeros((len(all_anchors_np), 4), dtype=np.float32)
+    y_true_cls_flat, y_true_reg_flat = np.zeros((all_anchors_np.shape[0], main_config['num_classes']),
+                                                dtype=np.float32), np.zeros((all_anchors_np.shape[0], 4),
+                                                                            dtype=np.float32)
     positive_indices = np.where(anchor_labels == 1)[0]
     if len(positive_indices) > 0:
-        positive_actual_gt_class_ids = matched_gt_class_ids_for_all_anchors[positive_indices]
-        y_true_cls_np[positive_indices] = tf.keras.utils.to_categorical(positive_actual_gt_class_ids,
-                                                                        num_classes=main_config['num_classes'])
-        y_true_reg_np[positive_indices] = encode_box_targets(all_anchors_np[positive_indices],
-                                                             matched_gt_boxes_for_all_anchors[positive_indices])
-    y_true_cls_np[np.where(anchor_labels == 0)[0]] = -1.0
+        y_true_cls_flat[positive_indices] = tf.keras.utils.to_categorical(matched_gt_class_ids[positive_indices],
+                                                                          num_classes=main_config['num_classes'])
+        y_true_reg_flat[positive_indices] = encode_box_targets(all_anchors_np[positive_indices],
+                                                               matched_gt_boxes[positive_indices])
+    y_true_cls_flat[np.where(anchor_labels == 0)[0]] = -1.0
+
+    # --- [ИЗМЕНЕНИЕ] Разбиваем "плоские" y_true на 6 частей, как в data_loader ---
+    logger.info("Разбиваем y_true на 6 частей для соответствия выходу модели...")
+    anchor_counts_per_level, output_shapes_per_level = [], []
+    num_base_anchors = main_config['num_anchors_per_level']
+    fpn_strides = [8, 16, 32]
+    for stride in fpn_strides:
+        fh, fw = h_target // stride, w_target // stride
+        anchor_counts_per_level.append(fh * fw * num_base_anchors)
+        output_shapes_per_level.append((fh, fw, num_base_anchors))
+
+    y_reg_split = tf.split(y_true_reg_flat, anchor_counts_per_level, axis=0)
+    y_cls_split = tf.split(y_true_cls_flat, anchor_counts_per_level, axis=0)
+
+    y_true_final_list = []
+    for i in range(len(fpn_strides)):
+        y_true_final_list.append(tf.reshape(y_reg_split[i], (*output_shapes_per_level[i], 4)))
+    for i in range(len(fpn_strides)):
+        y_true_final_list.append(tf.reshape(y_cls_split[i], (*output_shapes_per_level[i], main_config['num_classes'])))
+
+    y_true_final_tuple = tuple(y_true_final_list)
+
+    # --- [ИЗМЕНЕНИЕ] Создаем датасет с новой структурой y_true ---
+    # Добавляем батч-измерение к каждому из 6 тензоров
+    y_true_batched = tuple(tf.expand_dims(t, axis=0) for t in y_true_final_tuple)
 
     dataset_for_training = tf.data.Dataset.from_tensors(
         (tf.expand_dims(tf.constant(image_for_training_norm, dtype=tf.float32), axis=0),
-         (tf.expand_dims(tf.constant(y_true_reg_np, dtype=tf.float32), axis=0),
-          tf.expand_dims(tf.constant(y_true_cls_np, dtype=tf.float32), axis=0)))
+         y_true_batched)
     ).cache().repeat()
 
     all_anchors_tf = tf.constant(all_anchors_np, dtype=tf.float32)
 
-    # --- МОДЕЛЬ И ОБУЧЕНИЕ ---
-    temp_config = main_config.copy()  # Создаем копию, чтобы не менять глобальный main_config
-    temp_config['freeze_backbone'] = True  # Начинаем с замороженным backbone
+    # --- МОДЕЛЬ И ОБУЧЕНИЕ (без изменений) ---
+    temp_config = main_config.copy()
+    temp_config['freeze_backbone'] = True
     model = build_detector_v3_standard(temp_config)
 
     logger.info("Замораживаем слои BatchNormalization...")
     for layer in model.layers:
         if isinstance(layer, tf.keras.layers.BatchNormalization):
             layer.trainable = False
-        # Убедимся, что backbone действительно заморожен (если он не был заморожен при создании)
-        if temp_config['freeze_backbone'] and 'efficientnetb0' in layer.name:  # Пример имени backbone
+        if temp_config['freeze_backbone'] and 'efficientnetb0' in layer.name:
             layer.trainable = False
 
     optimizer = tf.keras.optimizers.Adam(learning_rate=initial_lr)
-    loss_fn = DetectorLoss(temp_config)  # Используем temp_config, если там есть параметры для loss
+    loss_fn = DetectorLoss(temp_config)
     model.compile(optimizer=optimizer, loss=loss_fn)
 
     visualizer_callback = BlockingVisualizer(
@@ -227,7 +254,7 @@ def train_on_one_image_final_attempt(main_config, predict_config, image_name, us
     )
 
     lr_scheduler = tf.keras.callbacks.ReduceLROnPlateau(
-        monitor='loss', factor=0.2, patience=100, min_lr=1e-7,  # Уменьшил min_lr
+        monitor='loss', factor=0.2, patience=100, min_lr=1e-7,
         verbose=1
     )
 

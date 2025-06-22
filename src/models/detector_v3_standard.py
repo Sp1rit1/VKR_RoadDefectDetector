@@ -7,46 +7,51 @@ from tensorflow.keras import Model
 import math
 
 
-# --- Новый класс модели с кастомным train_step ---
 class DetectorModel(Model):
     def __init__(self, inputs, outputs, **kwargs):
         super().__init__(inputs=inputs, outputs=outputs, **kwargs)
-        # loss_fn и optimizer будут установлены через model.compile()
-        self.loss_fn = None
-        self.optimizer = None
-        self.loss_tracker = tf.keras.metrics.Mean(name="loss")
+        # loss_fn НЕ будет устанавливаться через compile, мы передадим его сами
+        self.loss_calculator = None
 
-    def compile(self, optimizer, loss, **kwargs):
-        super().compile(**kwargs)
-        self.optimizer = optimizer
-        self.loss_fn = loss
+        # Наши кастомные метрики, которые мы контролируем
+        self.loss_tracker = tf.keras.metrics.Mean(name="loss")
+        self.val_loss_tracker = tf.keras.metrics.Mean(name="val_loss")
+
+    # ИЗМЕНЕНИЕ: compile теперь принимает наш кастомный loss
+    def compile(self, optimizer, loss_fn, **kwargs):
+        super().compile(optimizer=optimizer, **kwargs)
+        # Мы сохраняем нашу функцию потерь в атрибут класса
+        self.loss_calculator = loss_fn
+        # ВАЖНО: мы не передаем 'loss' в super().compile()
 
     @property
     def metrics(self):
-        # Мы отслеживаем только loss.
-        return [self.loss_tracker]
+        # Keras будет отслеживать только эти метрики
+        return [self.loss_tracker, self.val_loss_tracker]
 
     def train_step(self, data):
-        # Распаковываем данные. Наш data_loader возвращает (images, y_true)
         images, y_true = data
-
         with tf.GradientTape() as tape:
-            # 1. Делаем предсказание (y_pred)
             y_pred = self(images, training=True)
-            # 2. Вычисляем loss
-            # Наша loss_fn уже знает, как работать с кортежем y_true и списком y_pred
-            loss = self.loss_fn(y_true, y_pred)
+            # ИЗМЕНЕНИЕ: используем наш сохраненный loss_calculator
+            loss = self.loss_calculator(y_true, y_pred)
 
-        # 3. Вычисляем градиенты и обновляем веса
-        trainable_vars = self.trainable_variables
-        gradients = tape.gradient(loss, trainable_vars)
-        self.optimizer.apply_gradients(zip(gradients, trainable_vars))
+        gradients = tape.gradient(loss, self.trainable_variables)
+        self.optimizer.apply_gradients(zip(gradients, self.trainable_variables))
 
-        # Обновляем метрику loss
         self.loss_tracker.update_state(loss)
-
-        # Возвращаем словарь с текущим состоянием метрик
+        # Возвращаем словарь с ключом, совпадающим с именем метрики
         return {"loss": self.loss_tracker.result()}
+
+    def test_step(self, data):
+        images, y_true = data
+        y_pred = self(images, training=False)
+        # ИЗМЕНЕНИЕ: используем наш сохраненный loss_calculator
+        loss = self.loss_calculator(y_true, y_pred)
+
+        self.val_loss_tracker.update_state(loss)
+        # Возвращаем словарь с ключом, совпадающим с именем метрики
+        return {"loss": self.val_loss_tracker.result()}
 
 
 # --- Вспомогательные функции для построения модели ---

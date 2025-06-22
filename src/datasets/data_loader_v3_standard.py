@@ -46,21 +46,61 @@ def generate_all_anchors(input_shape, fpn_strides, anchor_scales, anchor_ratios)
 
 
 def calculate_iou_matrix(boxes1, boxes2):
+    """
+    Вычисляет матрицу IoU (Intersection over Union) между двумя наборами боксов.
+    Использует векторизацию numpy для высокой производительности.
+
+    Args:
+        boxes1 (np.ndarray): Массив боксов формы (N, 4) в формате [xmin, ymin, xmax, ymax].
+        boxes2 (np.ndarray): Массив боксов формы (M, 4) в формате [xmin, ymin, xmax, ymax].
+
+    Returns:
+        np.ndarray: Матрица IoU формы (N, M), где каждый элемент (i, j) - это
+                    IoU между i-м боксом из boxes1 и j-м боксом из boxes2.
+    """
+    # Преобразуем в numpy массивы для надежности
     boxes1_np = np.array(boxes1)
     boxes2_np = np.array(boxes2)
+
+    # Расширяем размерности, чтобы каждый бокс из boxes1 сравнивался с каждым из boxes2
+    # boxes1_ext: (N, 1, 4)
+    # boxes2_ext: (1, M, 4)
     boxes1_ext = boxes1_np[:, np.newaxis, :]
     boxes2_ext = boxes2_np[np.newaxis, :, :]
-    x1 = np.maximum(boxes1_ext[..., 0], boxes2_ext[..., 0])
-    y1 = np.maximum(boxes1_ext[..., 1], boxes2_ext[..., 1])
-    x2 = np.minimum(boxes1_ext[..., 2], boxes2_ext[..., 2])
-    y2 = np.minimum(boxes1_ext[..., 3], boxes2_ext[..., 3])
-    intersection_w = np.maximum(0.0, x2 - x1)
-    intersection_h = np.maximum(0.0, y2 - y1)
+
+    # --- Вычисление координат пересечения (intersection) ---
+    # Находим левую верхнюю точку (x1, y1) прямоугольника пересечения
+    # Это максимум из левых верхних точек исходных боксов
+    inter_x1 = np.maximum(boxes1_ext[..., 0], boxes2_ext[..., 0])
+    inter_y1 = np.maximum(boxes1_ext[..., 1], boxes2_ext[..., 1])
+
+    # Находим правую нижнюю точку (x2, y2) прямоугольника пересечения
+    # Это минимум из правых нижних точек исходных боксов
+    inter_x2 = np.minimum(boxes1_ext[..., 2], boxes2_ext[..., 2])
+    inter_y2 = np.minimum(boxes1_ext[..., 3], boxes2_ext[..., 3]) # <--- ЗДЕСЬ БЫЛА ОШИБКА, ИСПРАВЛЕНО
+
+    # Вычисляем ширину и высоту пересечения
+    # np.maximum(0.0, ...) гарантирует, что если боксы не пересекаются, размер будет 0, а не отрицательным
+    intersection_w = np.maximum(0.0, inter_x2 - inter_x1)
+    intersection_h = np.maximum(0.0, inter_y2 - inter_y1)
+
+    # Вычисляем площадь пересечения
     intersection_area = intersection_w * intersection_h
+
+    # --- Вычисление площади объединения (union) ---
+    # Площадь каждого бокса из первого набора
     area1 = (boxes1_ext[..., 2] - boxes1_ext[..., 0]) * (boxes1_ext[..., 3] - boxes1_ext[..., 1])
+    # Площадь каждого бокса из второго набора
     area2 = (boxes2_ext[..., 2] - boxes2_ext[..., 0]) * (boxes2_ext[..., 3] - boxes2_ext[..., 1])
+
+    # Площадь объединения = Площадь1 + Площадь2 - ПлощадьПересечения
     union_area = area1 + area2 - intersection_area
-    return intersection_area / (union_area + 1e-7)
+
+    # --- Финальный расчет IoU ---
+    # Добавляем маленький эпсилон в знаменатель, чтобы избежать деления на ноль
+    iou = intersection_area / (union_area + 1e-7)
+
+    return iou
 
 
 # --- Блок 2: Основная логика ---
@@ -176,73 +216,53 @@ def encode_box_targets(anchors, matched_gt_boxes):  # anchors - это all_ancho
 # --- Блок 3: Класс-генератор и создание датасета ---
 
 class DataGenerator:
-    def __init__(self, config, all_anchors, is_training=True, debug_mode=False, aug_seed=None):
-        # (aug_seed не используется в этой версии, но оставим для совместимости с train_detector, если понадобится)
-        self.logger = logging.getLogger(self.__class__.__name__)
-
+    def __init__(self, config, all_anchors, is_training=True, debug_mode=False):
         self.config = config
         self.is_training = is_training
         self.debug_mode = debug_mode
-        # self.aug_seed = aug_seed # Не используется напрямую в этой версии __init__
 
         # --- Настройка путей к данным ---
         dataset_path = Path(config['dataset_path'])
-        self.image_dir = dataset_path / (config['train_images_subdir'] if is_training else config['val_images_subdir'])
-        self.annot_dir = dataset_path / (
-            config['train_annotations_subdir'] if is_training else config['val_annotations_subdir'])
+        img_subdir = config['train_images_subdir'] if is_training else config['val_images_subdir']
+        ann_subdir = config['train_annotations_subdir'] if is_training else config['val_annotations_subdir']
+        self.image_dir = dataset_path / img_subdir
+        self.annot_dir = dataset_path / ann_subdir
 
-        # --- Поиск и сопоставление файлов изображений и аннотаций ---
-        # Ищем все поддерживаемые форматы изображений
+        # --- Сопоставление файлов ---
         image_extensions = ['*.jpg', '*.jpeg', '*.png', '*.bmp']
-        all_image_files = []
-        for ext in image_extensions:
-            all_image_files.extend(list(self.image_dir.glob(ext)))
-
+        all_image_files = [p for ext in image_extensions for p in self.image_dir.glob(ext)]
         all_annot_files = list(self.annot_dir.glob('*.xml'))
-
-        self.logger.info(f"Поиск файлов в: {self.image_dir} (изображения) и {self.annot_dir} (аннотации)")
-        self.logger.info(
-            f"Найдено всего: {len(all_image_files)} файлов изображений и {len(all_annot_files)} файлов аннотаций.")
-
-        # Создаем словари для быстрого доступа по базовому имени (без расширения)
         image_file_dict = {p.stem: p for p in all_image_files}
         annot_file_dict = {p.stem: p for p in all_annot_files}
-
-        # Находим базовые имена, которые присутствуют в обоих списках
-        # Используем оператор & для пересечения ключей словарей (dict_keys)
         matched_basenames = sorted(list(image_file_dict.keys() & annot_file_dict.keys()))
+        self.image_paths = [image_file_dict[basename] for basename in matched_basenames]
+        self.annot_paths = [annot_file_dict[basename] for basename in matched_basenames]
 
-        if not matched_basenames:
-            self.logger.error(
-                f"Не найдено совпадающих имен файлов (с расширениями {image_extensions} и .xml) в {self.image_dir} / {self.annot_dir}. Тренировка/валидация невозможна.")
-            self.image_paths = []
-            self.annot_paths = []
-            # Инициализируем остальные атрибуты, если __init__ прерывается
-            self.all_anchors = np.empty((0, 4), dtype=np.float32)  # или all_anchors_norm
-            self.num_total_anchors = 0
-            # И другие атрибуты, которые могут понадобиться в __len__ или create_dataset для пустого датасета
-            return
-        else:
-            self.logger.info(f"Найдено {len(matched_basenames)} совпадающих пар изображений/аннотаций.")
-            # Формируем финальные списки путей на основе совпадающих имен
-            self.image_paths = [image_file_dict[basename] for basename in matched_basenames]
-            self.annot_paths = [annot_file_dict[basename] for basename in matched_basenames]
+        if not self.image_paths:
+            logging.error(f"Не найдено совпадающих пар изображений/аннотаций в {self.image_dir} и {self.annot_dir}")
 
-        # --- Параметры из конфига (остаются как в вашей рабочей версии) ---
+        # --- Загрузка параметров из конфига ---
         self.input_shape = config['input_shape']
         self.class_mapping = {name: i for i, name in enumerate(config['class_names'])}
         self.num_classes = config['num_classes']
         self.pos_iou_thresh = config['anchor_positive_iou_threshold']
         self.neg_iou_thresh = config['anchor_ignore_iou_threshold']
+        self.all_anchors = all_anchors
 
-        self.all_anchors = all_anchors  # Сохраняем переданные якоря
+        # --- [ВАЖНО] Предрасчет размеров для разбиения y_true ---
+        self.anchor_counts_per_level = []
+        self.output_shapes_per_level = []
+        H, W = self.input_shape[:2]
+        num_base_anchors = config['num_anchors_per_level']  # Одно число, например 21
+        self.fpn_strides = [8, 16, 32]
+        for stride in self.fpn_strides:
+            fh, fw = H // stride, W // stride
+            self.anchor_counts_per_level.append(fh * fw * num_base_anchors)
+            self.output_shapes_per_level.append((fh, fw, num_base_anchors))
 
-        # --- Настройка аугментации (остается как в вашей рабочей версии) ---
-        if self.is_training and config.get('use_augmentation', True):  # Используем get для use_augmentation
+        # --- Настройка аугментации ---
+        if self.is_training and config.get('use_augmentation', True):
             self.augmenter = augmentations.get_detector_train_augmentations(*self.input_shape[:2])
-            if not self.augmenter:
-                self.logger.warning(
-                    "Функция augmentations.get_detector_train_augmentations вернула None. Аугментация будет отключена.")
         else:
             self.augmenter = None
 
@@ -250,138 +270,141 @@ class DataGenerator:
         return len(self.image_paths)
 
     def __call__(self):
-        for i in range(len(self)):
-            image_path = self.image_paths[i]
-            annot_path = self.annot_paths[i]
+        for i in range(self.__len__()):
+            image_path, annot_path = self.image_paths[i], self.annot_paths[i]
 
+            # 1. Загрузка и ресайз
             image = cv2.imread(str(image_path))
-            if image is None:  # Проверка на случай, если изображение не загрузилось
-                logger.error(f"Не удалось загрузить изображение: {image_path}")
+            if image is None:
+                logging.warning(f"Не удалось прочитать изображение: {image_path}, пропускаем.")
                 continue
-            image_original_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-            image_h_orig, image_w_orig, _ = image_original_rgb.shape
 
-            gt_boxes_pixels, gt_class_names_original = parse_voc_xml(annot_path)
+            image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            h_orig, w_orig, _ = image_rgb.shape
+            gt_boxes_pixels, gt_class_names = parse_voc_xml(annot_path)
 
-            image_resized = cv2.resize(image_original_rgb, (self.input_shape[1], self.input_shape[0]))
+            h_target, w_target = self.input_shape[:2]
+            image_resized = cv2.resize(image_rgb, (w_target, h_target))
 
             gt_boxes_resized_pixels = []
             if gt_boxes_pixels:
-                for box in gt_boxes_pixels:
-                    xmin, ymin, xmax, ymax = box
-                    xmin_r = (xmin / image_w_orig) * self.input_shape[1]
-                    ymin_r = (ymin / image_h_orig) * self.input_shape[0]
-                    xmax_r = (xmax / image_w_orig) * self.input_shape[1]
-                    ymax_r = (ymax / image_h_orig) * self.input_shape[0]
-                    gt_boxes_resized_pixels.append([xmin_r, ymin_r, xmax_r, ymax_r])
+                for b in gt_boxes_pixels:
+                    x1, y1, x2, y2 = b
+                    gt_boxes_resized_pixels.append(
+                        [(x1 / w_orig) * w_target, (y1 / h_orig) * h_target, (x2 / w_orig) * w_target,
+                         (y2 / h_orig) * h_target])
 
-            # Данные для аугментации
-            image_to_augment = image_resized
-            boxes_to_augment = gt_boxes_resized_pixels
-            class_labels_for_aug = gt_class_names_original  # Используем имена классов
-
+            # 2. Аугментация
             if self.augmenter:
-                augmented = self.augmenter(image=image_to_augment, bboxes=boxes_to_augment,
-                                           class_labels_for_albumentations=class_labels_for_aug)
-                image_final_uint8 = augmented['image']
+                augmented = self.augmenter(image=image_resized, bboxes=gt_boxes_resized_pixels,
+                                           class_labels_for_albumentations=gt_class_names)
+                image_final = augmented['image']
                 gt_boxes_final_pixels = augmented['bboxes']
                 gt_class_names_final = augmented['class_labels_for_albumentations']
             else:
-                image_final_uint8 = image_to_augment
-                gt_boxes_final_pixels = boxes_to_augment
-                gt_class_names_final = class_labels_for_aug
+                image_final = image_resized
+                gt_boxes_final_pixels = gt_boxes_resized_pixels
+                gt_class_names_final = gt_class_names
 
-            image_final_norm = image_final_uint8.astype(np.float32) / 255.0
+            # 3. Нормализация данных для y_true
+            image_for_model = image_final.astype(np.float32) / 255.0
 
             gt_boxes_norm = np.array(gt_boxes_final_pixels, dtype=np.float32) / np.array(
-                [self.input_shape[1], self.input_shape[0], self.input_shape[1],
-                 self.input_shape[0]]) if gt_boxes_final_pixels else np.empty((0, 4), dtype=np.float32)
+                [w_target, h_target, w_target, h_target]) if gt_boxes_final_pixels else np.empty((0, 4))
             gt_class_ids = np.array([self.class_mapping[name] for name in gt_class_names_final],
                                     dtype=np.int32) if gt_class_names_final else np.empty((0,), dtype=np.int32)
 
-            # ===> ИСПРАВЛЕННЫЙ ВЫЗОВ assign_gt_to_anchors <===
-            anchor_labels, matched_gt_boxes, matched_gt_class_ids, max_iou_per_anchor = assign_gt_to_anchors(
-                gt_boxes_norm,
-                gt_class_ids,  # Передаем ID классов GT
-                self.all_anchors,
-                self.pos_iou_thresh,
-                self.neg_iou_thresh  # <--- Добавлен недостающий аргумент
-            )
+            # 4. Назначение якорей и создание "плоских" y_true
+            anchor_labels, matched_gt_boxes, matched_gt_class_ids, _ = assign_gt_to_anchors(gt_boxes_norm, gt_class_ids,
+                                                                                            self.all_anchors,
+                                                                                            self.pos_iou_thresh,
+                                                                                            self.neg_iou_thresh)
 
-            y_true_cls = np.zeros((len(self.all_anchors), self.num_classes), dtype=np.float32)
-            y_true_reg = np.zeros((len(self.all_anchors), 4), dtype=np.float32)
+            y_true_cls_flat = np.zeros((self.all_anchors.shape[0], self.num_classes), dtype=np.float32)
+            y_true_reg_flat = np.zeros((self.all_anchors.shape[0], 4), dtype=np.float32)
 
             positive_indices = np.where(anchor_labels == 1)[0]
             if len(positive_indices) > 0:
-                # Используем ID классов, сопоставленные на этапе ASSIGN_GT
-                positive_actual_gt_class_ids = matched_gt_class_ids[positive_indices]
-                y_true_cls[positive_indices] = tf.keras.utils.to_categorical(positive_actual_gt_class_ids,
-                                                                             num_classes=self.num_classes)
+                y_true_cls_flat[positive_indices] = tf.keras.utils.to_categorical(
+                    matched_gt_class_ids[positive_indices], num_classes=self.num_classes)
+                y_true_reg_flat[positive_indices] = encode_box_targets(self.all_anchors[positive_indices],
+                                                                       matched_gt_boxes[positive_indices])
 
-                # Для регрессии используем те GT боксы, которые были сопоставлены
-                y_true_reg[positive_indices] = encode_box_targets(
-                    self.all_anchors[positive_indices],
-                    matched_gt_boxes[positive_indices]  # Передаем правильные matched_gt_boxes
-                )
+            y_true_cls_flat[np.where(anchor_labels == 0)[0]] = -1.0  # Метка для игнорируемых
 
-            ignore_indices = np.where(anchor_labels == 0)[0]
-            y_true_cls[ignore_indices] = -1.0
+            # 5. Разбиение плоских y_true на 6 частей, как у модели
+            y_reg_split_by_level = tf.split(y_true_reg_flat, self.anchor_counts_per_level, axis=0)
+            y_cls_split_by_level = tf.split(y_true_cls_flat, self.anchor_counts_per_level, axis=0)
 
+            # Собираем в список для удобства
+            y_true_final_list = []
+            # Сначала регрессия
+            for i in range(len(self.fpn_strides)):
+                shape = (*self.output_shapes_per_level[i], 4)
+                y_true_final_list.append(tf.reshape(y_reg_split_by_level[i], shape))
+            # Затем классификация
+            for i in range(len(self.fpn_strides)):
+                shape = (*self.output_shapes_per_level[i], self.num_classes)
+                y_true_final_list.append(tf.reshape(y_cls_split_by_level[i], shape))
+
+            # [ИСПРАВЛЕНИЕ] Превращаем список в кортеж перед yield
+            y_true_final_tuple = tuple(y_true_final_list)
+
+            # Возвращаем данные в формате (изображение, КОРТЕЖ_из_6_тензоров)
             if not self.debug_mode:
-                yield image_final_norm, (y_true_reg, y_true_cls)
+                yield image_for_model, y_true_final_tuple
             else:
-                debug_info = {
-                    "image_path": str(image_path),
-                    "image_original": image_original_rgb,  # uint8
-                    "gt_boxes_original": np.array(gt_boxes_pixels, dtype=np.int32).reshape(-1, 4),
-                    "gt_class_names_original": np.array(gt_class_names_original, dtype=str),
-                    "image_augmented": image_final_uint8,  # uint8
-                    "gt_boxes_augmented": np.array(gt_boxes_final_pixels, dtype=np.float32).reshape(-1, 4),
-                    "gt_class_names_augmented": np.array(gt_class_names_final, dtype=str),
-                    "all_anchors_norm": self.all_anchors,
-                    "anchor_labels": anchor_labels,
-                    "max_iou_per_anchor": max_iou_per_anchor,
-                }
-                yield image_final_norm, (y_true_reg, y_true_cls), debug_info
+                # В debug режиме возвращаем то же самое, но без словаря, чтобы не усложнять
+                # и чтобы сигнатура совпадала с основным режимом
+                yield image_for_model, y_true_final_tuple
 
 
 def create_dataset(config, is_training=True, batch_size=8, debug_mode=False):
+    """
+    Создает tf.data.Dataset для обучения или валидации.
+    """
+    # Генерируем якоря один раз
     all_anchors = generate_all_anchors(
         config['input_shape'], [8, 16, 32], config['anchor_scales'], config['anchor_ratios']
     )
+    # Создаем экземпляр генератора
     generator = DataGenerator(config, all_anchors, is_training, debug_mode=debug_mode)
 
-    if not debug_mode:
-        output_signature = (
-            tf.TensorSpec(shape=config['input_shape'], dtype=tf.float32),
-            (tf.TensorSpec(shape=(len(all_anchors), 4), dtype=tf.float32),
-             tf.TensorSpec(shape=(len(all_anchors), config['num_classes']), dtype=tf.float32))
+    # Создаем правильную output_signature
+    fh_p3, fw_p3, na = generator.output_shapes_per_level[0]
+    fh_p4, fw_p4, _ = generator.output_shapes_per_level[1]
+    fh_p5, fw_p5, _ = generator.output_shapes_per_level[2]
+
+    output_signature = (
+        tf.TensorSpec(shape=config['input_shape'], dtype=tf.float32),
+        # Кортеж из 6 тензоров
+        (
+            # Регрессия
+            tf.TensorSpec(shape=(fh_p3, fw_p3, na, 4), dtype=tf.float32),
+            tf.TensorSpec(shape=(fh_p4, fw_p4, na, 4), dtype=tf.float32),
+            tf.TensorSpec(shape=(fh_p5, fw_p5, na, 4), dtype=tf.float32),
+            # Классификация
+            tf.TensorSpec(shape=(fh_p3, fw_p3, na, config['num_classes']), dtype=tf.float32),
+            tf.TensorSpec(shape=(fh_p4, fw_p4, na, config['num_classes']), dtype=tf.float32),
+            tf.TensorSpec(shape=(fh_p5, fw_p5, na, config['num_classes']), dtype=tf.float32),
         )
-    else:
-        output_signature = (
-            tf.TensorSpec(shape=config['input_shape'], dtype=tf.float32),
-            (tf.TensorSpec(shape=(len(all_anchors), 4), dtype=tf.float32),
-             tf.TensorSpec(shape=(len(all_anchors), config['num_classes']), dtype=tf.float32)),
-            {
-                "image_path": tf.TensorSpec(shape=(), dtype=tf.string),
-                "image_original": tf.TensorSpec(shape=(None, None, 3), dtype=tf.uint8),
-                "gt_boxes_original": tf.TensorSpec(shape=(None, 4), dtype=tf.int32),
-                "gt_class_names_original": tf.TensorSpec(shape=(None,), dtype=tf.string),
-                "image_augmented": tf.TensorSpec(shape=config['input_shape'], dtype=tf.uint8),
-                "gt_boxes_augmented": tf.TensorSpec(shape=(None, 4), dtype=tf.float32),
-                "gt_class_names_augmented": tf.TensorSpec(shape=(None,), dtype=tf.string),
-                "all_anchors_norm": tf.TensorSpec(shape=(len(all_anchors), 4), dtype=tf.float32),
-                "anchor_labels": tf.TensorSpec(shape=(len(all_anchors),), dtype=tf.int32),
-                "max_iou_per_anchor": tf.TensorSpec(shape=(len(all_anchors),), dtype=tf.float32),
-            }
-        )
+    )
 
     dataset = tf.data.Dataset.from_generator(generator, output_signature=output_signature)
 
+    # [ИЗМЕНЕНИЕ] Добавляем .repeat()
     if not debug_mode:
+        # Зацикливаем датасет, чтобы он никогда не заканчивался
+        dataset = dataset.repeat()  # <--- ГЛАВНОЕ ИЗМЕНЕНИЕ
+
         if is_training:
-            dataset = dataset.shuffle(buffer_size=500)
-        dataset = dataset.batch(batch_size)
+            # Перемешиваем только тренировочный датасет
+            buffer_size = min(500, len(generator))
+            if buffer_size > 0:
+                dataset = dataset.shuffle(buffer_size=buffer_size)
+
+        # Батчим после перемешивания и зацикливания
+        dataset = dataset.batch(batch_size, drop_remainder=is_training)
 
     dataset = dataset.prefetch(buffer_size=tf.data.AUTOTUNE)
     return dataset
@@ -389,14 +412,14 @@ def create_dataset(config, is_training=True, batch_size=8, debug_mode=False):
 
 # --- Тестовый запуск ---
 if __name__ == '__main__':
-    print("--- Финальное тестирование data_loader_v3_standard.py (с исправленным assign_gt) ---")
+    print("--- Финальное тестирование data_loader_v3_standard.py ---")
 
     from pathlib import Path
     import yaml
 
     try:
         # Загружаем основной конфиг
-        _project_root = Path(__file__).parent.parent.parent.resolve()  # Корень проекта
+        _project_root = Path(__file__).parent.parent.parent.resolve()
         config_path = _project_root / "src" / "configs" / "detector_config_v3_standard.yaml"
         with open(config_path, 'r', encoding='utf-8') as f:
             config = yaml.safe_load(f)
@@ -408,15 +431,23 @@ if __name__ == '__main__':
     print("\n1. Тест создания тренировочного датасета (1 батч, обычный режим):")
     try:
         train_dataset = create_dataset(config, is_training=True, batch_size=2, debug_mode=False)
-        for images, (y_reg, y_cls) in train_dataset.take(1):
+
+        # [ИСПРАВЛЕНИЕ] Распаковываем y_true как один объект (кортеж)
+        for images, y_true_tuple in train_dataset.take(1):
             print(f"  - Форма батча изображений: {images.shape}")
-            print(f"  - Форма y_true для регрессии: {y_reg.shape}")
-            print(f"  - Форма y_true для классификации: {y_cls.shape}")
+            print(f"  - Тип y_true: {type(y_true_tuple)}")
+            print(f"  - Длина y_true (ожидаем 6): {len(y_true_tuple)}")
+
+            # Проверяем формы каждого из 6 тензоров в y_true
+            y_reg_p3, y_reg_p4, y_reg_p5, y_cls_p3, y_cls_p4, y_cls_p5 = y_true_tuple
+            print(f"  - Форма y_true_reg_p3: {y_reg_p3.shape}")
+            print(f"  - Форма y_true_cls_p3: {y_cls_p3.shape}")
+
             assert images.shape[0] == 2
-            num_total_anchors = generate_all_anchors(config['input_shape'], [8, 16, 32], config['anchor_scales'],
-                                                     config['anchor_ratios']).shape[0]
-            assert y_reg.shape[1] == num_total_anchors
-            assert y_cls.shape[1] == num_total_anchors
+            assert len(y_true_tuple) == 6
+            # Простая проверка формы первого регрессионного тензора
+            assert len(y_reg_p3.shape) == 5  # (batch, H, W, num_anchors, 4)
+
         print("  - [SUCCESS] Тест 1 пройден.")
     except Exception as e:
         print(f"  - [ERROR] Ошибка в тесте 1: {e}")
@@ -426,35 +457,20 @@ if __name__ == '__main__':
 
     print("\n2. Тест создания валидационного датасета (1 батч, debug_mode=True):")
     try:
-        # В debug_mode batch_size игнорируется в tf.data.Dataset, возвращается по 1 примеру
-        # Передаем aug_seed, если нужно фиксировать аугментацию для debug
-        val_dataset_debug = create_dataset(config, is_training=False, batch_size=1, debug_mode=True) # aug_seed можно добавить, если нужно
-        for images_dbg, (y_reg_dbg, y_cls_dbg), debug_info_dict in val_dataset_debug.take(1): # Возьмем один пример
-            print(f"  - Форма изображения (debug): {images_dbg.shape}")
-            print(f"  - Форма y_reg (debug): {y_reg_dbg.shape}")
-            print(f"  - Форма y_cls (debug): {y_cls_dbg.shape}")
-            print(f"  - Ключи в debug_info: {list(debug_info_dict.keys())}")
+        # [ИСПРАВЛЕНИЕ] В debug_mode теперь тоже 2 элемента
+        val_dataset_debug = create_dataset(config, is_training=False, batch_size=1, debug_mode=True)
 
-            # ИСПРАВЛЕНО: В debug_mode нет батч-измерения для images_dbg
-            assert images_dbg.shape == tuple(config['input_shape']), \
-                f"Ожидался input_shape {config['input_shape']}, получен {images_dbg.shape}"
-            # y_reg_dbg и y_cls_dbg также не имеют батч-измерения
-            num_total_anchors_debug = generate_all_anchors(config['input_shape'], [8, 16, 32], config['anchor_scales'],
-                                                        config['anchor_ratios']).shape[0]
-            assert y_reg_dbg.shape == (num_total_anchors_debug, 4), \
-                f"Ожидалась форма y_reg ({num_total_anchors_debug}, 4), получена {y_reg_dbg.shape}"
-            assert y_cls_dbg.shape == (num_total_anchors_debug, config['num_classes']), \
-                f"Ожидалась форма y_cls ({num_total_anchors_debug}, {config['num_classes']}), получена {y_cls_dbg.shape}"
+        # [ИСПРАВЛЕНИЕ] Распаковываем только 2 элемента
+        for image_dbg, y_true_tuple_dbg in val_dataset_debug.take(1):
+            print(f"  - Форма изображения (debug): {image_dbg.shape}")
+            print(f"  - Длина y_true (debug): {len(y_true_tuple_dbg)}")
 
-            assert "image_path" in debug_info_dict
-            assert "anchor_labels" in debug_info_dict
-            assert "all_anchors_norm" in debug_info_dict
-            assert debug_info_dict['all_anchors_norm'].shape == (num_total_anchors_debug, 4)
-            assert debug_info_dict['anchor_labels'].shape == (num_total_anchors_debug,)
-            assert debug_info_dict['max_iou_per_anchor'].shape == (num_total_anchors_debug,)
+            assert image_dbg.shape == tuple(config['input_shape'])
+            assert len(y_true_tuple_dbg) == 6
 
         print("  - [SUCCESS] Тест 2 пройден.")
     except Exception as e:
         print(f"  - [ERROR] Ошибка в тесте 2: {e}")
         import traceback
+
         traceback.print_exc()

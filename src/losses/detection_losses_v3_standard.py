@@ -93,27 +93,41 @@ class DetectorLoss(tf.keras.losses.Loss):
     def call(self, y_true, y_pred):
         """
         Главная функция вычисления потерь.
-
-        Args:
-            y_true (tuple): Кортеж (y_true_reg, y_true_cls).
-            y_pred (list): Список тензоров-предсказаний от модели:
-                           [reg_p3, reg_p4, reg_p5, cls_p3, cls_p4, cls_p5].
+        Теперь и y_true, и y_pred - это списки из 6 тензоров в одинаковом порядке:
+        [reg_p3, reg_p4, reg_p5, cls_p3, cls_p4, cls_p5]
         """
-        y_true_reg, y_true_cls = y_true
+        # Определяем, где в списке заканчивается регрессия и начинается классификация
+        num_levels = len(y_pred) // 2
 
-        # Предсказания модели нужно "расплющить" из FPN-уровней в один длинный тензор
-        if isinstance(y_pred, (list, tuple)):
-            num_levels = len(y_pred) // 2
-            y_pred_reg_reshaped = tf.concat([tf.reshape(p, [tf.shape(p)[0], -1, 4]) for p in y_pred[:num_levels]],
-                                            axis=1)
-            y_pred_cls_reshaped = tf.concat(
-                [tf.reshape(p, [tf.shape(p)[0], -1, self.num_classes]) for p in y_pred[num_levels:]], axis=1)
-        else:  # На случай, если тензоры уже сконкатенированы
-            y_pred_reg_reshaped, y_pred_cls_reshaped = y_pred
+        # --- Собираем "плоские" тензоры из y_true ---
+        # Склеиваем все тензоры регрессии (первые `num_levels` штук) в один большой
+        y_true_reg_flat = tf.concat(
+            [tf.reshape(t, [tf.shape(t)[0], -1, 4]) for t in y_true[:num_levels]],
+            axis=1
+        )
+        # Склеиваем все тензоры классификации (оставшиеся) в один большой
+        y_true_cls_flat = tf.concat(
+            [tf.reshape(t, [tf.shape(t)[0], -1, self.num_classes]) for t in y_true[num_levels:]],
+            axis=1
+        )
 
-        cls_loss = focal_loss(y_true_cls, y_pred_cls_reshaped, self.focal_alpha, self.focal_gamma)
-        reg_loss = huber_loss(y_true_reg, y_pred_reg_reshaped, y_true_cls, self.huber_delta)
+        # --- Собираем "плоские" тензоры из y_pred ---
+        # Делаем то же самое для предсказаний модели
+        y_pred_reg_flat = tf.concat(
+            [tf.reshape(p, [tf.shape(p)[0], -1, 4]) for p in y_pred[:num_levels]],
+            axis=1
+        )
+        y_pred_cls_flat = tf.concat(
+            [tf.reshape(p, [tf.shape(p)[0], -1, self.num_classes]) for p in y_pred[num_levels:]],
+            axis=1
+        )
 
+        # --- Вызываем старые функции потерь с новыми "плоскими" тензорами ---
+        # Теперь функции focal_loss и huber_loss получают данные в том формате, который они ожидают
+        cls_loss = focal_loss(y_true_cls_flat, y_pred_cls_flat, self.focal_alpha, self.focal_gamma)
+        reg_loss = huber_loss(y_true_reg_flat, y_pred_reg_flat, y_true_cls_flat, self.huber_delta)
+
+        # --- Считаем итоговый взвешенный loss ---
         total_loss = (self.cls_loss_weight * cls_loss) + (self.reg_loss_weight * reg_loss)
 
         return total_loss

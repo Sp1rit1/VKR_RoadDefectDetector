@@ -237,7 +237,7 @@ def train_detector(main_config_path, predict_config_path, run_seed=None):
         weight_decay=main_config.get('weight_decay', 1e-4)
     )
     loss_fn = DetectorLoss(main_config)
-    model.compile(optimizer=optimizer_phase1, loss=loss_fn)
+    model.compile(optimizer=optimizer_phase1, loss_fn=loss_fn)
     logger.info("Модель скомпилирована для Фазы 1.")
     lr_scheduler_phase1 = WarmupCosineDecay(
         initial_lr=main_config['initial_learning_rate'], total_epochs=main_config['epochs_phase1'],
@@ -273,7 +273,7 @@ def train_detector(main_config_path, predict_config_path, run_seed=None):
         learning_rate=main_config['fine_tune_learning_rate'],
         weight_decay=main_config.get('weight_decay', 1e-4)
     )
-    model.compile(optimizer=optimizer_phase2, loss=loss_fn)
+    model.compile(optimizer=optimizer_phase2, loss_fn=loss_fn)
     logger.info("Модель скомпилирована для Фазы 2 с новым LR.")
     lr_scheduler_phase2 = WarmupCosineDecay(
         initial_lr=main_config['fine_tune_learning_rate'], total_epochs=main_config['epochs_phase2'],
