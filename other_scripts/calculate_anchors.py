@@ -82,7 +82,7 @@ for i, range_pair in enumerate(FPN_GT_ASSIGNMENT_AREA_RANGES):
 
 FPN_GT_ASSIGNMENT_AREA_RANGES = parsed_area_ranges
 
-NUM_FINAL_ANCHORS_PER_LEVEL = CONFIG['num_anchors_per_level']
+NUM_FINAL_ANCHORS_PER_LEVEL = CONFIG['num_anchors_per_level_K_means']
 if len(NUM_FINAL_ANCHORS_PER_LEVEL) != 3 or 'P3' not in NUM_FINAL_ANCHORS_PER_LEVEL or 'P4' not in NUM_FINAL_ANCHORS_PER_LEVEL or 'P5' not in NUM_FINAL_ANCHORS_PER_LEVEL:
     sys.exit("ОШИБКА: 'num_anchors_per_level' в конфиге должен содержать ключи P3, P4, P5. Выход.")
 
