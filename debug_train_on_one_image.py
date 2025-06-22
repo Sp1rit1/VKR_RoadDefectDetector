@@ -7,6 +7,7 @@ import logging
 from pathlib import Path
 import matplotlib.pyplot as plt
 import tensorflow as tf
+import random  # Для Python random
 
 # --- Настройка путей и импортов ---
 PROJECT_ROOT = Path(__file__).parent.resolve()
@@ -18,35 +19,37 @@ try:
         parse_voc_xml, generate_all_anchors, assign_gt_to_anchors,
         encode_box_targets, calculate_iou_matrix
     )
-    from src.models.detector_v3_standard import build_detector_v3_standard
-    from src.losses.detection_losses_v3_standard import DetectorLoss
+    from src.models.detector_v3_standard import build_detector_v3_standard  # Ожидаем модель с линейной регрессией
+    from src.losses.detection_losses_v3_standard import DetectorLoss  # Ожидаем с simplified_bce_loss
     from src.utils import plot_utils
-    from src.utils.postprocessing import decode_predictions, perform_nms
+    from src.utils.postprocessing import decode_predictions, perform_nms  # Ожидает tx,ty,tw,th и якоря
     from src.datasets import augmentations
 except ImportError as e:
     print(f"Ошибка импорта модулей: {e}\nУбедитесь, что скрипт запускается из корня проекта.")
     sys.exit(1)
 
-# --- Настройка логирования ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 
 # --- Кастомный Коллбэк для Визуализации ---
 class BlockingVisualizer(tf.keras.callbacks.Callback):
-    def __init__(self, image_path_str, annot_path_str, all_anchors_tf, main_config, predict_config, aug_seed_for_viz,
-                 freq=10):
+    def __init__(self, image_path_str, annot_path_str, all_anchors_tf, main_config, predict_config,
+                 use_augmentation_for_viz, aug_seed_for_viz, freq=10):
         super().__init__()
         self.image_path = Path(image_path_str)
         self.annot_path = Path(annot_path_str)
-        self.all_anchors = all_anchors_tf
+        self.all_anchors = all_anchors_tf  # Тензор всех якорей
         self.main_config = main_config
         self.predict_config = predict_config
+        self.use_augmentation = use_augmentation_for_viz
         self.aug_seed = aug_seed_for_viz
         self.freq = freq
 
         self.output_dir = PROJECT_ROOT / "graphs" / "overfit_final"
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.progress_dir = PROJECT_ROOT / "graphs" / "overfit_progress"
+        self.progress_dir.mkdir(parents=True, exist_ok=True)
 
     def _prepare_image_and_gt_for_viz(self):
         image_original = cv2.cvtColor(cv2.imread(str(self.image_path)), cv2.COLOR_BGR2RGB)
@@ -63,141 +66,131 @@ class BlockingVisualizer(tf.keras.callbacks.Callback):
                 gt_boxes_resized.append([(x1 / w_orig) * w_target, (y1 / h_orig) * h_target, (x2 / w_orig) * w_target,
                                          (y2 / h_orig) * h_target])
 
-        image_to_use_for_viz = image_resized
-        gt_boxes_for_viz = gt_boxes_resized
-        gt_labels_for_viz = gt_class_names_original
+        image_to_show = image_resized
+        gt_boxes_to_show = gt_boxes_resized
+        gt_labels_to_show = gt_class_names_original
 
-        # Аугментация для визуализации (если self.aug_seed не None)
-        if self.aug_seed is not None:
-            np.random.seed(self.aug_seed)  # Устанавливаем сид для воспроизводимости
+        if self.use_augmentation:
+            if self.aug_seed is not None: np.random.seed(self.aug_seed)
             augmenter = augmentations.get_detector_train_augmentations(h_target, w_target)
+            class_names_for_aug_cb = [self.main_config['class_names'][cid] if isinstance(cid, int) else cid for cid in
+                                      gt_class_names_original]
             augmented = augmenter(image=image_resized, bboxes=gt_boxes_resized,
-                                  class_labels_for_albumentations=gt_class_names_original)
-            image_to_use_for_viz = augmented['image']
-            gt_boxes_for_viz = augmented['bboxes']
-            gt_labels_for_viz = augmented['class_labels_for_albumentations']
+                                  class_labels_for_albumentations=class_names_for_aug_cb)
+            image_to_show = augmented['image']
+            gt_boxes_to_show = augmented['bboxes']
+            gt_labels_to_show = augmented['class_labels_for_albumentations']
 
-        return image_to_use_for_viz, gt_boxes_for_viz, gt_labels_for_viz
+        return image_to_show, gt_boxes_to_show, gt_labels_to_show
 
     def on_epoch_end(self, epoch, logs=None):
         is_last_epoch = (epoch + 1) == self.params['epochs']
         if (epoch + 1) % self.freq == 0 or is_last_epoch:
-            logger.info(f"\nЭпоха {epoch + 1}: Остановка для визуализации. Закройте окно, чтобы продолжить...")
+            logger.info(f"\nЭпоха {epoch + 1}: Остановка для визуализации...")
 
-            image_augmented_for_plot, gt_boxes_for_plot, gt_labels_for_plot = self._prepare_image_and_gt_for_viz()
-
-            image_for_predict_norm = image_augmented_for_plot.astype(np.float32) / 255.0
+            image_to_visualize, gt_boxes_to_visualize, gt_labels_to_visualize = self._prepare_image_and_gt_for_viz()
+            image_for_predict_norm = image_to_visualize.astype(np.float32) / 255.0
             image_batch = tf.expand_dims(image_for_predict_norm, axis=0)
-            raw_predictions = self.model.predict(image_batch, verbose=0)
+            raw_predictions_list = self.model.predict(image_batch, verbose=0)
 
-            decoded_boxes, decoded_scores = decode_predictions(raw_predictions, self.all_anchors, self.main_config)
+            # decode_predictions теперь снова ожидает all_anchors
+            decoded_boxes_norm, decoded_scores = decode_predictions(raw_predictions_list, self.all_anchors,
+                                                                    self.main_config)
             nms_boxes, nms_scores, nms_classes, valid_detections = perform_nms(
-                decoded_boxes, decoded_scores, self.predict_config
+                decoded_boxes_norm, decoded_scores, self.predict_config
             )
 
             fig, ax = plt.subplots(1, 1, figsize=(12, 12))
             num_dets = valid_detections[0].numpy()
-            final_boxes = nms_boxes[0, :num_dets].numpy()
-            final_scores = nms_scores[0, :num_dets].numpy()
-            final_classes = nms_classes[0, :num_dets].numpy().astype(int)
+            final_boxes_yxYX_norm = nms_boxes[0, :num_dets].numpy()
+            final_scores_nms = nms_scores[0, :num_dets].numpy()
+            final_classes_nms = nms_classes[0, :num_dets].numpy().astype(int)
 
             ax.set_title(f"Эпоха {epoch + 1} | Loss: {logs['loss']:.4f} | Изображение: {self.image_path.name}")
-            plot_utils.plot_image(image_augmented_for_plot, ax)
-            plot_utils.plot_boxes_on_image(ax, gt_boxes_for_plot, labels=gt_labels_for_plot, box_type='gt', linewidth=3)
+            plot_utils.plot_image(image_to_visualize, ax)
+            plot_utils.plot_boxes_on_image(ax, gt_boxes_to_visualize, labels=gt_labels_to_visualize, box_type='gt',
+                                           linewidth=3)
 
-            pred_labels = [self.main_config['class_names'][i] for i in final_classes]
-            final_boxes_xyxy = final_boxes[:, [1, 0, 3, 2]]
-            final_boxes_pixels = final_boxes_xyxy * np.array(
+            pred_labels_nms = [self.main_config['class_names'][i] for i in final_classes_nms]
+            final_boxes_xyxy_norm = final_boxes_yxYX_norm[:, [1, 0, 3, 2]]
+            final_boxes_pixels = final_boxes_xyxy_norm * np.array(
                 [self.main_config['input_shape'][1], self.main_config['input_shape'][0]] * 2)
-            plot_utils.plot_boxes_on_image(ax, final_boxes_pixels, labels=pred_labels, box_type='pred',
-                                           scores=final_scores, linewidth=1.5)
+            plot_utils.plot_boxes_on_image(ax, final_boxes_pixels, labels=pred_labels_nms, box_type='pred',
+                                           scores=final_scores_nms, linewidth=1.5)
 
-            if is_last_epoch:
-                save_path = self.output_dir / f"overfit_test_final_prediction_{self.image_path.stem}.png"
-                plot_utils.save_plot(fig, str(save_path))
-            plt.show()
+            save_dir = self.progress_dir if not is_last_epoch else self.output_dir
+            filename = f"epoch_{epoch + 1:03d}_{self.image_path.stem}.png" if not is_last_epoch else f"overfit_test_final_prediction_{self.image_path.stem}.png"
+            plot_utils.save_plot(fig, str(save_dir / filename))
+
+            plt.show()  # Блокирующий вызов
 
 
 # --- Основная функция ---
-def train_on_one_image(main_config, predict_config, image_name, use_augmentation_for_train, fixed_aug_seed, epochs=100,
-                       viz_freq=10):
-    logger.info(f"--- Запуск теста на переобучение на изображении: {image_name} ---")
+def train_on_one_image_final_attempt(main_config, predict_config, image_name, use_augmentation_for_train,
+                                     seed_for_this_run, epochs=2000, initial_lr=1e-3, viz_freq=200):
+    logger.info(f"--- Финальный тест переобучения для: {image_name} ---")
+
+    if seed_for_this_run is not None:
+        logger.info(f"Установка глобальных сидов на: {seed_for_this_run}")
+        tf.random.set_seed(seed_for_this_run)
+        np.random.seed(seed_for_this_run)
+        random.seed(seed_for_this_run)
+
     if use_augmentation_for_train:
-        logger.info(
-            f"Аугментация для обучающего примера: ВКЛЮЧЕНА (сид: {fixed_aug_seed if fixed_aug_seed is not None else 'случайный'})")
+        logger.info(f"Аугментация для обучающего примера: ВКЛЮЧЕНА (сид: {seed_for_this_run})")
     else:
         logger.info("Аугментация для обучающего примера: ВЫКЛЮЧЕНА")
 
     dataset_path = Path(main_config['dataset_path'])
     image_path_to_use = dataset_path / main_config['train_images_subdir'] / image_name
     annot_path_to_use = dataset_path / main_config['train_annotations_subdir'] / (Path(image_name).stem + ".xml")
-
     if not image_path_to_use.exists():
-        logger.info(f"Не найдено в 'train', ищем в 'validation'...")
         image_path_to_use = dataset_path / main_config['val_images_subdir'] / image_name
         annot_path_to_use = dataset_path / main_config['val_annotations_subdir'] / (Path(image_name).stem + ".xml")
-        if not image_path_to_use.exists():
-            logger.error(f"Изображение '{image_name}' не найдено ни в одной из директорий.")
-            return
-    logger.info(f"Используется изображение: {image_path_to_use}")
+        if not image_path_to_use.exists(): logger.error(f"Файл {image_name} не найден."); return
 
     image_original = cv2.cvtColor(cv2.imread(str(image_path_to_use)), cv2.COLOR_BGR2RGB)
     h_orig, w_orig, _ = image_original.shape
-    gt_boxes_original, gt_class_names_original = parse_voc_xml(annot_path_to_use)
-
+    gt_boxes_original_pixels, gt_class_names_original = parse_voc_xml(annot_path_to_use)
     h_target, w_target = main_config['input_shape'][:2]
-    image_resized = cv2.resize(image_original, (w_target, h_target))
-    gt_boxes_resized = [
+    image_resized_uint8 = cv2.resize(image_original, (w_target, h_target))
+    gt_boxes_resized_pixels = [
         [(b[0] / w_orig) * w_target, (b[1] / h_orig) * h_target, (b[2] / w_orig) * w_target, (b[3] / h_orig) * h_target]
-        for b in gt_boxes_original]
+        for b in gt_boxes_original_pixels]
 
-    image_for_training_final = image_resized
-    gt_boxes_for_training_final = gt_boxes_resized
-    gt_labels_for_training_final = gt_class_names_original
-
+    image_for_training_final_uint8, gt_boxes_for_training_final_pixels, gt_labels_for_training_final = image_resized_uint8, gt_boxes_resized_pixels, gt_class_names_original
     if use_augmentation_for_train:
-        if fixed_aug_seed is not None: np.random.seed(fixed_aug_seed)
+        # np.random.seed(seed_for_this_run) уже установлен глобально
         augmenter = augmentations.get_detector_train_augmentations(h_target, w_target)
-        augmented = augmenter(image=image_resized, bboxes=gt_boxes_resized,
-                              class_labels_for_albumentations=gt_class_names_original)
-        image_for_training_final = augmented['image']
-        gt_boxes_for_training_final = augmented['bboxes']
-        gt_labels_for_training_final = augmented['class_labels_for_albumentations']
+        class_names_for_aug_train = [main_config['class_names'][cid] if isinstance(cid, int) else cid for cid in
+                                     gt_class_names_original]
+        augmented = augmenter(image=image_resized_uint8, bboxes=gt_boxes_resized_pixels,
+                              class_labels_for_albumentations=class_names_for_aug_train)
+        image_for_training_final_uint8, gt_boxes_for_training_final_pixels, gt_labels_for_training_final = augmented[
+            'image'], augmented['bboxes'], augmented['class_labels_for_albumentations']
 
-    image_for_training_norm = (image_for_training_final.astype(np.float32) / 255.0)
-
+    image_for_training_norm = (image_for_training_final_uint8.astype(np.float32) / 255.0)
     all_anchors_np = generate_all_anchors(main_config['input_shape'], [8, 16, 32], main_config['anchor_scales'],
                                           main_config['anchor_ratios'])
+    gt_boxes_norm_assign = np.array(gt_boxes_for_training_final_pixels, dtype=np.float32) / np.array(
+        [w_target, h_target, w_target, h_target]) if gt_boxes_for_training_final_pixels else np.empty((0, 4))
+    gt_class_ids_assign = np.array([main_config['class_names'].index(name) for name in gt_labels_for_training_final],
+                                   dtype=np.int32) if gt_labels_for_training_final else np.empty((0,), dtype=np.int32)
 
-    if gt_boxes_for_training_final:
-        gt_boxes_norm_assign = np.array(gt_boxes_for_training_final, dtype=np.float32) / np.array(
-            [w_target, h_target, w_target, h_target])
-        gt_class_ids_assign = np.array(
-            [main_config['class_names'].index(name) for name in gt_labels_for_training_final], dtype=np.int32)
-    else:
-        gt_boxes_norm_assign = np.empty((0, 4), dtype=np.float32);
-        gt_class_ids_assign = np.empty((0,), dtype=np.int32)
-
-    anchor_labels, matched_gt_boxes, _ = assign_gt_to_anchors(
-        gt_boxes_norm_assign, all_anchors_np,
-        main_config['anchor_positive_iou_threshold'],
-        main_config['anchor_ignore_iou_threshold']
+    anchor_labels, matched_gt_boxes_for_all_anchors, matched_gt_class_ids_for_all_anchors, _ = assign_gt_to_anchors(
+        gt_boxes_norm_assign, gt_class_ids_assign, all_anchors_np,
+        main_config['anchor_positive_iou_threshold'], main_config['anchor_ignore_iou_threshold']
     )
 
-    y_true_cls_np = np.zeros((len(all_anchors_np), main_config['num_classes']), dtype=np.float32)
-    y_true_reg_np = np.zeros((len(all_anchors_np), 4), dtype=np.float32)
+    y_true_cls_np, y_true_reg_np = np.zeros((len(all_anchors_np), main_config['num_classes']),
+                                            dtype=np.float32), np.zeros((len(all_anchors_np), 4), dtype=np.float32)
     positive_indices = np.where(anchor_labels == 1)[0]
-
-    if len(positive_indices) > 0 and len(gt_boxes_norm_assign) > 0:
-        iou_pos_anchors_vs_gt = calculate_iou_matrix(all_anchors_np[positive_indices], gt_boxes_norm_assign)
-        best_gt_indices_for_pos_anchors = np.argmax(iou_pos_anchors_vs_gt, axis=1)
-        positive_gt_class_ids = gt_class_ids_assign[best_gt_indices_for_pos_anchors]
-
-        y_true_cls_np[positive_indices] = tf.keras.utils.to_categorical(positive_gt_class_ids,
+    if len(positive_indices) > 0:
+        positive_actual_gt_class_ids = matched_gt_class_ids_for_all_anchors[positive_indices]
+        y_true_cls_np[positive_indices] = tf.keras.utils.to_categorical(positive_actual_gt_class_ids,
                                                                         num_classes=main_config['num_classes'])
         y_true_reg_np[positive_indices] = encode_box_targets(all_anchors_np[positive_indices],
-                                                             matched_gt_boxes[positive_indices])
-
+                                                             matched_gt_boxes_for_all_anchors[positive_indices])
     y_true_cls_np[np.where(anchor_labels == 0)[0]] = -1.0
 
     dataset_for_training = tf.data.Dataset.from_tensors(
@@ -206,25 +199,41 @@ def train_on_one_image(main_config, predict_config, image_name, use_augmentation
           tf.expand_dims(tf.constant(y_true_cls_np, dtype=tf.float32), axis=0)))
     ).cache().repeat()
 
-    logger.info(
-        f"Датасет для обучения на '{image_name}' (с аугм. сидом {fixed_aug_seed if use_augmentation_for_train else 'N/A'}) успешно создан.")
-
     all_anchors_tf = tf.constant(all_anchors_np, dtype=tf.float32)
-    main_config['freeze_backbone'] = False
-    model = build_detector_v3_standard(main_config)
-    optimizer = tf.keras.optimizers.Adam(learning_rate=1e-3)
-    loss_fn = DetectorLoss(main_config)
+
+    # --- МОДЕЛЬ И ОБУЧЕНИЕ ---
+    temp_config = main_config.copy()  # Создаем копию, чтобы не менять глобальный main_config
+    temp_config['freeze_backbone'] = True  # Начинаем с замороженным backbone
+    model = build_detector_v3_standard(temp_config)
+
+    logger.info("Замораживаем слои BatchNormalization...")
+    for layer in model.layers:
+        if isinstance(layer, tf.keras.layers.BatchNormalization):
+            layer.trainable = False
+        # Убедимся, что backbone действительно заморожен (если он не был заморожен при создании)
+        if temp_config['freeze_backbone'] and 'efficientnetb0' in layer.name:  # Пример имени backbone
+            layer.trainable = False
+
+    optimizer = tf.keras.optimizers.Adam(learning_rate=initial_lr)
+    loss_fn = DetectorLoss(temp_config)  # Используем temp_config, если там есть параметры для loss
     model.compile(optimizer=optimizer, loss=loss_fn)
 
     visualizer_callback = BlockingVisualizer(
         str(image_path_to_use), str(annot_path_to_use),
-        all_anchors_tf, main_config, predict_config,
-        fixed_aug_seed if use_augmentation_for_train else None,  # Передаем сид в коллбэк
+        all_anchors_tf, temp_config, predict_config,
+        use_augmentation_for_train,
+        seed_for_this_run if use_augmentation_for_train else None,
         freq=viz_freq
     )
 
+    lr_scheduler = tf.keras.callbacks.ReduceLROnPlateau(
+        monitor='loss', factor=0.2, patience=100, min_lr=1e-7,  # Уменьшил min_lr
+        verbose=1
+    )
+
     logger.info(f"Начинаем обучение на {epochs} эпохах...")
-    model.fit(dataset_for_training, epochs=epochs, steps_per_epoch=1, verbose=1, callbacks=[visualizer_callback])
+    model.fit(dataset_for_training, epochs=epochs, steps_per_epoch=1, verbose=1,
+              callbacks=[visualizer_callback, lr_scheduler])
     logger.info("Обучение завершено.")
 
 
@@ -242,18 +251,25 @@ if __name__ == '__main__':
 
     IMAGE_TO_DEBUG = "China_Drone_000180.jpg"
 
-    USE_AUGMENTATION_FOR_THIS_TEST = main_config.get('use_augmentation', True)
-    AUG_SEED_IF_ENABLED = 42 if USE_AUGMENTATION_FOR_THIS_TEST else None
+    # --- Настройки для финального теста ---
+    USE_AUGMENTATION = False  # ВЫКЛЮЧАЕМ АУГМЕНТАЦИЮ
+    SEED = 42  # Фиксированный сид для всего, включая инициализацию весов
 
-    EPOCHS_FOR_OVERFIT_TEST = 100
-    VISUALIZATION_FREQUENCY = 10
+    EPOCHS = 2000  # Много шагов
+    INITIAL_LR = 1e-3  # Начинаем с этого
+    VIZ_FREQ = max(1, EPOCHS // 10)  # Визуализация ~10 раз
 
-    train_on_one_image(
+    # Убедимся, что в main_config правильный вес для регрессии
+    main_config['loss_weights']['box_regression'] = 1.5  # или 2.0, 5.0 - можно поэкспериментировать
+    logger.info(f"Для теста используется box_regression_weight: {main_config['loss_weights']['box_regression']}")
+
+    train_on_one_image_final_attempt(
         main_config=main_config,
         predict_config=predict_config,
         image_name=IMAGE_TO_DEBUG,
-        use_augmentation_for_train=USE_AUGMENTATION_FOR_THIS_TEST,
-        fixed_aug_seed=AUG_SEED_IF_ENABLED,
-        epochs=EPOCHS_FOR_OVERFIT_TEST,
-        viz_freq=VISUALIZATION_FREQUENCY
+        use_augmentation_for_train=USE_AUGMENTATION,
+        seed_for_this_run=SEED,
+        epochs=EPOCHS,
+        initial_lr=INITIAL_LR,
+        viz_freq=VIZ_FREQ
     )
