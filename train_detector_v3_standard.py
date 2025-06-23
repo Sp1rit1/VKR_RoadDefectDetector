@@ -217,16 +217,24 @@ def train_detector(main_config_path, predict_config_path, run_seed=None):
     logger.info(f"Путь для сохранения чекпоинта: {checkpoint_filepath}")
 
     callbacks = [
-        tf.keras.callbacks.TensorBoard(log_dir=str(log_dir_run), histogram_freq=1, update_freq='epoch', profile_batch=0),
+        tf.keras.callbacks.TensorBoard(log_dir=str(log_dir_run), histogram_freq=1),
         tf.keras.callbacks.ModelCheckpoint(
-            filepath=checkpoint_filepath, # Используем исправленное имя
+            filepath=str(checkpoint_filepath),
             save_weights_only=True,
-            monitor='val_loss' if validation_steps > 0 else 'loss',
-            mode='min', save_best_only=True, verbose=1
+            monitor='val_loss',
+            mode='min',
+            save_best_only=True,
+            verbose=1
         ),
+        # [ИЗМЕНЕНИЕ] Добавляем EarlyStopping
         tf.keras.callbacks.EarlyStopping(
-            monitor='val_loss' if validation_steps > 0 else 'loss',
-            patience=main_config.get('early_stopping_patience', 20), mode='min', verbose=1, restore_best_weights=True
+            monitor='val_loss',
+            # Используем .get() для безопасности, если параметра вдруг нет
+            patience=main_config.get('early_stopping_patience', 20),
+            min_delta=main_config.get('early_stopping_min_delta', 0.0001),
+            mode='min',
+            verbose=1,
+            restore_best_weights=True  # Это самый важный параметр!
         )
     ]
 
@@ -236,9 +244,28 @@ def train_detector(main_config_path, predict_config_path, run_seed=None):
         learning_rate=main_config['initial_learning_rate'],
         weight_decay=main_config.get('weight_decay', 1e-4)
     )
-    loss_fn = DetectorLoss(main_config)
+
+    all_anchors = generate_all_anchors(
+        main_config['input_shape'], [8, 16, 32],
+        main_config['anchor_scales'], main_config['anchor_ratios']
+    )
+
+    loss_fn = DetectorLoss(main_config, all_anchors=all_anchors)
+
     model.compile(optimizer=optimizer_phase1, loss_fn=loss_fn)
+
     logger.info("Модель скомпилирована для Фазы 1.")
+
+    logger.info("Замораживаем ВСЕ слои BatchNormalization в модели...")
+    for layer in model.layers:
+        if isinstance(layer, tf.keras.layers.BatchNormalization):
+            layer.trainable = False
+        # Дополнительно проходим по вложенным моделям (backbone, heads)
+        if hasattr(layer, 'layers'):
+            for sub_layer in layer.layers:
+                if isinstance(sub_layer, tf.keras.layers.BatchNormalization):
+                    sub_layer.trainable = False
+
     lr_scheduler_phase1 = WarmupCosineDecay(
         initial_lr=main_config['initial_learning_rate'], total_epochs=main_config['epochs_phase1'],
         steps_per_epoch=steps_per_epoch, warmup_epochs=main_config.get('warmup_epochs', 0), name='LR_Phase1'
@@ -273,7 +300,11 @@ def train_detector(main_config_path, predict_config_path, run_seed=None):
         learning_rate=main_config['fine_tune_learning_rate'],
         weight_decay=main_config.get('weight_decay', 1e-4)
     )
+
+    loss_fn = DetectorLoss(main_config, all_anchors=all_anchors)
+
     model.compile(optimizer=optimizer_phase2, loss_fn=loss_fn)
+
     logger.info("Модель скомпилирована для Фазы 2 с новым LR.")
     lr_scheduler_phase2 = WarmupCosineDecay(
         initial_lr=main_config['fine_tune_learning_rate'], total_epochs=main_config['epochs_phase2'],
@@ -281,6 +312,10 @@ def train_detector(main_config_path, predict_config_path, run_seed=None):
     )
     callbacks_phase2 = callbacks + [lr_scheduler_phase2]
     logger.info(f"Начинаем Фазу 2 обучения на {main_config['epochs_phase2']} эпохах...")
+
+    logger.info("Сброс итераций оптимизатора для корректной работы LR-шедулера...")
+    optimizer_phase2.iterations.assign(0)
+
     model.fit(
         train_dataset, epochs=main_config['epochs_phase1'] + main_config['epochs_phase2'],
         initial_epoch=main_config['epochs_phase1'],

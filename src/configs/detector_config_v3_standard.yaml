@@ -24,13 +24,11 @@ class_names: ["pit", "crack"]
 # Этот подход более надежный, робастный и простой в реализации, чем K-Means.
 
 anchor_ratios:
-- 0.0971
-- 0.2190
-- 0.4490
-- 0.9844
-- 1.7715
-- 3.2737
-- 7.0542
+- 0.126  # Вертикальная трещина
+- 0.362  # Умеренно-вертикальная
+- 1.136  # Квадратная/Яма (чуть вытянутая)
+- 2.461  # Умеренно-горизонтальная
+- 6.093  # Горизонтальная трещина
 
 # Масштабы якорей. Это множители к базовому размеру якоря на каждом уровне.
 # Базовый размер = stride * anchor_base_size. Стандартно anchor_base_size = 4.
@@ -41,7 +39,7 @@ anchor_scales: [1.0, 1.2599, 1.5874] # Соответствует 2^(0), 2^(1/3)
 # Количество якорей в каждой ячейке сетки для каждого уровня FPN.
 # Рассчитывается как len(anchor_scales) * len(anchor_ratios).
 # 3 scales * 3 ratios = 9. Это значение должно быть одинаковым для всех уровней.
-num_anchors_per_level: 21
+num_anchors_per_level: 15
 
 fpn_filters: 256
 
@@ -70,9 +68,9 @@ loss_weights:
   box_regression: 1.5 # Для начала поставим 1.0, чтобы сбалансировать потери. Можно будет поднять до 1.5 позже.
 
 focal_loss_alpha: 0.25
-focal_loss_gamma: 2.0
+focal_loss_gamma: 1.25
 
-box_loss_type: "huber"
+box_loss_type: "ciou"
 huber_loss_delta: 1.0
 
 # --- Параметры обучения ---
@@ -84,8 +82,14 @@ lr_schedule: "cosine_decay"
 warmup_epochs: 3
 # cosine_decay_epochs будет равно общему числу эпох обучения на каждой фазе.
 
-epochs_phase1: 40
-epochs_phase2: 20
+
+epochs_phase1: 100
+epochs_phase2: 50
+
+early_stopping_patience: 20       # Сколько эпох ждать без улучшения val_loss
+early_stopping_min_delta: 0.0001  # Минимальное изменение, которое считается улучшением
+
+
 batch_size: 8
 use_augmentation: true
 

@@ -9,42 +9,41 @@ def get_detector_train_augmentations(img_height, img_width):
     return A.Compose([
         A.HorizontalFlip(p=0.5),
 
+        # [ИЗМЕНЕНИЕ] Адаптируем Affine под старый синтаксис
+        # Мы не можем использовать keep_ratio, но задавая одинаковые диапазоны
+        # для x и y, мы получаем очень похожее поведение.
         A.Affine(
-            scale=(0.9, 1.1),
-            translate_percent=(-0.05, 0.05),  # Сделали меньше
+            scale={'x': (0.9, 1.1), 'y': (0.9, 1.1)},
+            translate_percent={'x': (-0.05, 0.05), 'y': (-0.05, 0.05)},
             rotate=(-7, 7),
-            shear=(-3, 3),  # Сделали меньше
-            p=0.5,  # Уменьшили вероятность
-            border_mode=cv2.BORDER_CONSTANT,
-            # cval=0, # Убрали, BORDER_CONSTANT по умолчанию 0
-            keep_ratio=True
+            shear={'x': (-3, 3), 'y': (-3, 3)},
+            p=0.5
+            # Аргумент 'border_mode', который вызывал ошибку, отсутствует
         ),
 
         A.RandomBrightnessContrast(
-            brightness_limit=0.1,  # Оставим умеренным
+            brightness_limit=0.1,
             contrast_limit=0.1,
             p=0.5
         ),
+
         A.HueSaturationValue(
-            hue_shift_limit=8,  # Чуть меньше
-            sat_shift_limit=20,  # Чуть меньше
-            val_shift_limit=8,  # Чуть меньше
+            hue_shift_limit=8,
+            sat_shift_limit=20,
+            val_shift_limit=8,
             p=0.3
         ),
 
-        # A.GaussNoise(p=0.1, var_limit=(1.0, 5.0)), # ПОКА ПОЛНОСТЬЮ ВЫКЛЮЧЕН
-        # Можно будет вернуть очень слабый, если нужно
-
         A.OneOf([
-            A.MedianBlur(blur_limit=3, p=0.2),  # p здесь - это вероятность выбора внутри OneOf
-            A.Blur(blur_limit=3, p=0.2),
-        ], p=0.15),  # Общая вероятность блока OneOf
+            A.MedianBlur(blur_limit=3, p=0.5),  # Вероятности внутри OneOf должны в сумме давать 1.0
+            A.Blur(blur_limit=3, p=0.5),  # Поэтому ставим по 0.5, если два варианта
+        ], p=0.15),
 
     ], bbox_params=A.BboxParams(
         format='pascal_voc',
         label_fields=['class_labels_for_albumentations'],
-        min_visibility=0.3,
-        min_area=30
+        min_visibility=0.1, # Оставляем небольшие части боксов
+        min_area=1          # Оставляем даже самые маленькие боксы
     ))
 
 

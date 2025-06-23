@@ -286,35 +286,61 @@ class DataGenerator:
             h_target, w_target = self.input_shape[:2]
             image_resized = cv2.resize(image_rgb, (w_target, h_target))
 
-            gt_boxes_resized_pixels = []
-            if gt_boxes_pixels:
-                for b in gt_boxes_pixels:
-                    x1, y1, x2, y2 = b
-                    gt_boxes_resized_pixels.append(
-                        [(x1 / w_orig) * w_target, (y1 / h_orig) * h_target, (x2 / w_orig) * w_target,
-                         (y2 / h_orig) * h_target])
+            # 2. [ИСПРАВЛЕНИЕ] Подготовка и СИНХРОННАЯ фильтрация данных ДО аугментации
+            gt_boxes_for_aug = []
+            gt_classes_for_aug = []
 
-            # 2. Аугментация
-            if self.augmenter:
-                augmented = self.augmenter(image=image_resized, bboxes=gt_boxes_resized_pixels,
-                                           class_labels_for_albumentations=gt_class_names)
+            if gt_boxes_pixels:
+                for box, class_name in zip(gt_boxes_pixels, gt_class_names):
+                    x1, y1, x2, y2 = box
+                    # Пересчитываем пиксельные координаты
+                    px1 = (x1 / w_orig) * w_target
+                    py1 = (y1 / h_orig) * h_target
+                    px2 = (x2 / w_orig) * w_target
+                    py2 = (y2 / h_orig) * h_target
+
+                    # ОБРЕЗАЕМ, чтобы избежать ошибок округления
+                    px1, px2 = np.clip([px1, px2], 0, w_target)
+                    py1, py2 = np.clip([py1, py2], 0, h_target)
+
+                    # Добавляем бокс и класс в списки, только если бокс валидный
+                    if px2 > px1 and py2 > py1:
+                        gt_boxes_for_aug.append([px1, py1, px2, py2])
+                        gt_classes_for_aug.append(class_name)
+
+            # 3. Аугментация
+            if self.augmenter and gt_boxes_for_aug:
+                augmented = self.augmenter(
+                    image=image_resized,
+                    bboxes=gt_boxes_for_aug,  # Используем отфильтрованные данные
+                    class_labels_for_albumentations=gt_classes_for_aug  # И отфильтрованные классы
+                )
                 image_final = augmented['image']
                 gt_boxes_final_pixels = augmented['bboxes']
                 gt_class_names_final = augmented['class_labels_for_albumentations']
             else:
                 image_final = image_resized
-                gt_boxes_final_pixels = gt_boxes_resized_pixels
-                gt_class_names_final = gt_class_names
+                gt_boxes_final_pixels = gt_boxes_for_aug
+                gt_class_names_final = gt_classes_for_aug
 
-            # 3. Нормализация данных для y_true
-            image_for_model = image_final.astype(np.float32) / 255.0
+            # 4. Финальная нормализация и обработка (остается без изменений)
+            image_for_model = image_final.astype(np.float32)
 
-            gt_boxes_norm = np.array(gt_boxes_final_pixels, dtype=np.float32) / np.array(
-                [w_target, h_target, w_target, h_target]) if gt_boxes_final_pixels else np.empty((0, 4))
-            gt_class_ids = np.array([self.class_mapping[name] for name in gt_class_names_final],
-                                    dtype=np.int32) if gt_class_names_final else np.empty((0,), dtype=np.int32)
+            if gt_boxes_final_pixels:
+                gt_boxes_norm = np.array(gt_boxes_final_pixels, dtype=np.float32) / np.array(
+                    [w_target, h_target, w_target, h_target])
+                gt_boxes_norm = np.clip(gt_boxes_norm, 0.0, 1.0)
 
-            # 4. Назначение якорей и создание "плоских" y_true
+                valid_indices = (gt_boxes_norm[:, 2] > gt_boxes_norm[:, 0]) & (
+                            gt_boxes_norm[:, 3] > gt_boxes_norm[:, 1])
+                gt_boxes_norm = gt_boxes_norm[valid_indices]
+                gt_class_ids = \
+                np.array([self.class_mapping.get(name) for name in gt_class_names_final], dtype=np.int32)[valid_indices]
+            else:
+                gt_boxes_norm = np.empty((0, 4), dtype=np.float32)
+                gt_class_ids = np.empty((0,), dtype=np.int32)
+
+            # ... (остальной код генерации y_true остается без изменений) ...
             anchor_labels, matched_gt_boxes, matched_gt_class_ids, _ = assign_gt_to_anchors(gt_boxes_norm, gt_class_ids,
                                                                                             self.all_anchors,
                                                                                             self.pos_iou_thresh,
@@ -330,33 +356,19 @@ class DataGenerator:
                 y_true_reg_flat[positive_indices] = encode_box_targets(self.all_anchors[positive_indices],
                                                                        matched_gt_boxes[positive_indices])
 
-            y_true_cls_flat[np.where(anchor_labels == 0)[0]] = -1.0  # Метка для игнорируемых
+            y_true_cls_flat[np.where(anchor_labels == 0)[0]] = -1.0
 
-            # 5. Разбиение плоских y_true на 6 частей, как у модели
             y_reg_split_by_level = tf.split(y_true_reg_flat, self.anchor_counts_per_level, axis=0)
             y_cls_split_by_level = tf.split(y_true_cls_flat, self.anchor_counts_per_level, axis=0)
 
-            # Собираем в список для удобства
             y_true_final_list = []
-            # Сначала регрессия
             for i in range(len(self.fpn_strides)):
-                shape = (*self.output_shapes_per_level[i], 4)
-                y_true_final_list.append(tf.reshape(y_reg_split_by_level[i], shape))
-            # Затем классификация
+                y_true_final_list.append(tf.reshape(y_reg_split_by_level[i], (*self.output_shapes_per_level[i], 4)))
             for i in range(len(self.fpn_strides)):
-                shape = (*self.output_shapes_per_level[i], self.num_classes)
-                y_true_final_list.append(tf.reshape(y_cls_split_by_level[i], shape))
+                y_true_final_list.append(
+                    tf.reshape(y_cls_split_by_level[i], (*self.output_shapes_per_level[i], self.num_classes)))
 
-            # [ИСПРАВЛЕНИЕ] Превращаем список в кортеж перед yield
-            y_true_final_tuple = tuple(y_true_final_list)
-
-            # Возвращаем данные в формате (изображение, КОРТЕЖ_из_6_тензоров)
-            if not self.debug_mode:
-                yield image_for_model, y_true_final_tuple
-            else:
-                # В debug режиме возвращаем то же самое, но без словаря, чтобы не усложнять
-                # и чтобы сигнатура совпадала с основным режимом
-                yield image_for_model, y_true_final_tuple
+            yield image_for_model, tuple(y_true_final_list)
 
 
 def create_dataset(config, is_training=True, batch_size=8, debug_mode=False):

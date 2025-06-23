@@ -242,8 +242,10 @@ def train_on_one_image_final_attempt(main_config, predict_config, image_name, us
             layer.trainable = False
 
     optimizer = tf.keras.optimizers.Adam(learning_rate=initial_lr)
-    loss_fn = DetectorLoss(temp_config)
-    model.compile(optimizer=optimizer, loss=loss_fn)
+
+    loss_fn = DetectorLoss(temp_config, all_anchors=all_anchors_np)
+
+    model.compile(optimizer=optimizer, loss_fn=loss_fn)
 
     visualizer_callback = BlockingVisualizer(
         str(image_path_to_use), str(annot_path_to_use),
