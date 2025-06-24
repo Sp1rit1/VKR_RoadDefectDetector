@@ -14,102 +14,205 @@ import numpy as np
 import random # Для установки сида random
 
 
-
 # --- Настройка путей для импорта ---
-PROJECT_ROOT = Path(__file__).parent.resolve()
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.append(str(PROJECT_ROOT))
+# Определяем корень проекта, поднимаясь вверх по дереву директорий, пока не найдем маркер (например, папку 'src')
+_current_file_path = Path(__file__).resolve()
+PROJECT_ROOT = _current_file_path
+# Поднимаемся на один уровень выше, пока не найдем папку 'src' или не достигнем корня файловой системы
+while not (PROJECT_ROOT / 'src').exists() and PROJECT_ROOT != PROJECT_ROOT.parent:
+    PROJECT_ROOT = PROJECT_ROOT.parent
 
+# Добавляем корень проекта в sys.path, если его там нет
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT)) # Вставляем в начало для приоритета
+    _added_to_sys_path = True
+else:
+    _added_to_sys_path = False
+
+
+# --- Настройка логирования ---
 logger = logging.getLogger(__name__)
+# Установим уровень только если он не был установлен ранее
 if not logger.handlers:
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+# Отключим логирование из Albumentations если оно мешает
 logging.getLogger('albumentations').setLevel(logging.WARNING)
 
 
-
-# Дополнительная проверка, которую использует Keras
-from tensorflow.python.client import device_lib
-print(device_lib.list_local_devices())
-
-
+# --- Импорт наших модулей ---
 try:
-    from src.datasets.data_loader_v3_standard import create_dataset, generate_all_anchors, DataGenerator # Импортируем DataGenerator
+    # Импортируем функцию создания датасета из нашего data_loader
+    # Теперь импорты должны работать, т.к. корень проекта в sys.path
+    from src.datasets.data_loader_v3_standard import create_dataset, generate_all_anchors, DataGenerator # Импортируем DataGenerator для получения размера
+    # Импортируем функцию построения модели
     from src.models.detector_v3_standard import build_detector_v3_standard
+    # Импортируем нашу функцию потерь
     from src.losses.detection_losses_v3_standard import DetectorLoss
+    # Импортируем plot_utils для потенциальной визуализации (опционально в коллбэке)
+    from src.utils import plot_utils # Хотя напрямую здесь не используется, может быть нужен коллбэкам
+    # Импортируем postprocessing для оценки или кастомных коллбэков
+    # from src.utils.postprocessing import decode_predictions, perform_nms # Эти нужны будут в evaluate/predict скриптах
+
 except ImportError as e:
     logger.error(f"Ошибка импорта модулей проекта: {e}")
     logger.error(f"Current sys.path: {sys.path}")
     sys.exit(1)
 
+
+# --- Установка глобальных сидов для воспроизводимости ---
 def set_global_seed(seed):
+    """Устанавливает сид для random, numpy и tensorflow."""
     if seed is not None:
         logger.info(f"Установка глобальных сидов на: {seed}")
         random.seed(seed)
         np.random.seed(seed)
         tf.random.set_seed(seed)
+        # tf.keras.utils.set_random_seed(seed) # Альтернативный способ для Keras >= 2.6
+        # Albumentations использует сид numpy.random
     else:
-        logger.info("Глобальный сид НЕ установлен.")
+        logger.info("Глобальный сид НЕ установлен (используются случайные сиды).")
+
 
 # --- Кастомный планировщик Learning Rate с Warmup и Cosine Decay ---
 class WarmupCosineDecay(tf.keras.callbacks.Callback):
     def __init__(self, initial_lr, total_epochs, steps_per_epoch, warmup_epochs, name='WarmupCosineDecay'):
+        """
+        Инициализирует планировщик LR с Warmup и Cosine Decay для ОДНОЙ фазы обучения.
+
+        Args:
+            initial_lr (float): Максимальная скорость обучения, которая будет достигнута после warmup.
+            total_epochs (int): Общее количество эпох в ТЕКУЩЕЙ фазе обучения.
+            steps_per_epoch (int): Количество шагов в одной эпохе.
+            warmup_epochs (int): Количество эпох для линейного "разогрева" LR.
+            name (str): Имя коллбэка.
+        """
         super().__init__()
         self.initial_lr = initial_lr
         self.total_epochs_in_phase = total_epochs
         self.steps_per_epoch = steps_per_epoch
-        self.warmup_epochs = warmup_epochs
         self.name = name
-        self.total_steps_in_phase = self.total_epochs_in_phase * self.steps_per_epoch
-        self.warmup_steps = self.warmup_epochs * self.steps_per_epoch
+        self.total_steps_in_phase = total_epochs * steps_per_epoch
+        self.warmup_steps = warmup_epochs * steps_per_epoch
+
+        # [ИСПРАВЛЕНО] Начальная глобальная итерация будет заполнена на on_train_begin
+        self._start_global_iteration = 0 # Используем 0 как заглушку, будет обновлено в on_train_begin
 
         if self.warmup_steps >= self.total_steps_in_phase and self.total_steps_in_phase > 0:
              logger.warning(f"Warmup steps ({self.warmup_steps}) >= Total steps in phase ({self.total_steps_in_phase}). Warmup будет длиться всю фазу.")
 
+
     def on_train_begin(self, logs=None):
+        """
+        Фиксирует "ноль" итераций в момент старта фазы обучения.
+        Вызывается Keras в начале model.fit().
+        """
         if self.model.optimizer is None:
              logger.error("Оптимизатор не установлен в модели! LR Scheduler не будет работать.")
              return
-        # ИСПРАВЛЕНО: Используем прямое присваивание, если learning_rate - это Variable
-        # tf.keras.backend.set_value(self.model.optimizer.learning_rate, self.initial_lr) # Старый способ
-        self.model.optimizer.learning_rate.assign(self.initial_lr) # Новый, более надежный способ для tf.Variable
-        logger.info(f"LR Scheduler '{self.name}': Начинаем фазу с LR = {self.model.optimizer.learning_rate.numpy():.7f}")
+        # [ИСПРАВЛЕНО] Фиксируем начальное количество итераций оптимизатора для этой фазы
+        self._start_global_iteration = self.model.optimizer.iterations.numpy()
+
+        # Убедимся, что оптимизатор инициализирован с начальным LR (на случай, если LR был изменен)
+        # self.model.optimizer.learning_rate.assign(self.initial_lr) # Это произойдет автоматически при компиляции
+
+        logger.info(f"LR Scheduler '{self.name}': Начинаем фазу. LR = {self.model.optimizer.learning_rate.numpy():.7f}, Start Iteration = {self._start_global_iteration}")
+
 
     def on_train_batch_begin(self, batch, logs=None):
-        current_step_tf = self.model.optimizer.iterations
-        current_step_in_phase = tf.cast(current_step_tf, tf.float32)
+        """
+        Обновляет LR для каждого шага обучения.
+        """
+        # Текущая глобальная итерация оптимизатора
+        current_global_iteration = self.model.optimizer.iterations.numpy()
 
+        # [ИСПРАВЛЕНО] Текущая итерация ВНУТРИ ЭТОЙ ФАЗЫ
+        # Рассчитываем как разницу между глобальной итерацией и зафиксированной в on_train_begin
+        current_step_in_phase = current_global_iteration - self._start_global_iteration
+
+
+        # Логика расчета LR остается прежней, но теперь использует current_step_in_phase
         if current_step_in_phase < self.warmup_steps:
-            current_lr = self.initial_lr * (current_step_in_phase / self.warmup_steps) if self.warmup_steps > 0 else self.initial_lr
+            # Warmup phase: линейное увеличение LR
+            target_lr = self.initial_lr
+            warmup_steps = self.warmup_steps # Явное использование атрибута
+            current_lr = target_lr * (current_step_in_phase / warmup_steps) if warmup_steps > 0 else target_lr
         else:
+            # Cosine Decay phase
+            # Расчет шагов в фазе затухания
             steps_after_warmup = current_step_in_phase - self.warmup_steps
             total_decay_steps = self.total_steps_in_phase - self.warmup_steps
+
             if total_decay_steps > 0:
                  cosine_decay_factor = 0.5 * (1 + tf.cos(math.pi * steps_after_warmup / total_decay_steps))
                  current_lr = self.initial_lr * cosine_decay_factor
             else:
-                 current_lr = self.initial_lr
-        current_lr = tf.maximum(current_lr, 0.0)
-        # ИСПРАВЛЕНО: Используем прямое присваивание
-        # tf.keras.backend.set_value(self.model.optimizer.learning_rate, current_lr) # Старый способ
-        self.model.optimizer.learning_rate.assign(current_lr) # Новый способ
+                 current_lr = self.initial_lr # Если нет фазы затухания, сохраняем LR после Warmup
+
+        # Устанавливаем новый LR
+        current_lr = max(current_lr, 0.0) # Убедимся, что LR неотрицательный
+        self.model.optimizer.learning_rate.assign(current_lr) # Используем assign для tf.Variable
+
 
     def on_epoch_end(self, epoch, logs=None):
-        # ИСПРАВЛЕНО: Получаем значение через .numpy()
+        """
+        Логирует LR в конце каждой эпохи.
+        """
+        # Логируем LR в конце каждой эпохи
         current_lr = self.model.optimizer.learning_rate.numpy()
-        if logs is not None:
-             logs['learning_rate'] = current_lr
-        logger.info(f"LR Scheduler '{self.name}': LR на конце эпохи {epoch + (self.params.get('initial_epoch', 0)) + 1} = {current_lr:.7f}")
+        # [ИСПРАВЛЕНО] Логируем с учетом номера эпохи в ФАЗЕ + начальная эпоха
+        initial_epoch_in_fit = self.params.get('initial_epoch', 0) # Эпоха, с которой началась текущая фаза в model.fit
+        epoch_in_phase = epoch - initial_epoch_in_fit # Номер эпохи внутри текущей фазы (начиная с 0)
 
+        if logs is not None:
+             logs['learning_rate'] = current_lr # Логируем в TensorBoard
+        logger.info(f"LR Scheduler '{self.name}': Эпоха {epoch + 1} (в фазе: {epoch_in_phase+1}/{self.total_epochs_in_phase}), LR = {current_lr:.7f}")
+
+
+# --- Вспомогательная функция для вычисления шагов в эпоху ---
 def calculate_steps(dataset_size, batch_size):
-    if dataset_size == 0 or batch_size == 0: return 0
-    return math.ceil(dataset_size / batch_size)
+    """Вычисляет количество шагов в эпоху, округляя вниз."""
+    if dataset_size == 0 or batch_size == 0:
+        return 0
+    # Используем len() экземпляра DataGenerator для получения размера датасета
+    # [ИЗМЕНЕНИЕ] Округляем вниз (floor) для консервативной оценки
+    return math.floor(dataset_size / batch_size)
+
+
+def _freeze_backbone(model, prefix='block'):
+    """
+    Замораживает слои в модели, чьи имена начинаются с заданного префикса,
+    и также замораживает все слои BatchNormalization в модели.
+    """
+    frozen, bn_frozen = 0, 0
+    # Проходим по ВСЕМ слоям модели (включая вложенные)
+    for layer in model.layers:
+        # Заморозка слоев Backbone по префиксу (напр., 'block' для EfficientNet)
+        if layer.name.startswith(prefix):
+            layer.trainable = False; frozen += 1
+        # [ВАЖНО] Замораживаем ВСЕ BN-слои, включая те, что в головах, для Фазы 1
+        if isinstance(layer, tf.keras.layers.BatchNormalization):
+            layer.trainable = False; bn_frozen += 1
+        # Рекурсивно проходим по вложенным моделям/слоям
+        if hasattr(layer, 'layers'):
+            for sub_layer in layer.layers:
+                 if sub_layer.name.startswith(prefix):
+                      sub_layer.trainable = False; frozen += 1
+                 if isinstance(sub_layer, tf.keras.layers.BatchNormalization):
+                      sub_layer.trainable = False; bn_frozen += 1
+
+    logger.info(f"Backbone freeze: {frozen} слоев с префиксом '{prefix}' заморожены. {bn_frozen} BN слоев заморожены.")
+
+
 
 # --- Основная функция тренировки ---
-def train_detector(main_config_path, predict_config_path, run_seed=None):
+# [ИЗМЕНЕНИЕ] train_detector - убраны тяжелые кастомные коллбэки
+def train_detector(main_config_path, predict_config_path=None, run_seed=None):
     """Обучает детектор в две фазы."""
     logger.info("--- Запуск обучения детектора ---")
 
     # 1. Загрузка конфигов
+    # ... (остается без изменений) ...
     try:
         with open(main_config_path, 'r', encoding='utf-8') as f:
             main_config = yaml.safe_load(f)
@@ -133,60 +236,65 @@ def train_detector(main_config_path, predict_config_path, run_seed=None):
     set_global_seed(run_seed)
 
     # 3. Подготовка путей для логов и весов
+    # ... (остается без изменений) ...
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     log_base_dir = PROJECT_ROOT / main_config.get('logs_base_dir', 'logs')
     weights_base_dir = PROJECT_ROOT / main_config.get('weights_base_dir', 'weights')
-    log_dir_run = log_base_dir / main_config['log_dir'] / timestamp
-    saved_model_dir = weights_base_dir / main_config['saved_model_dir']
+    log_dir_run = log_base_dir / main_config['log_dir'] / timestamp # Папка для логов конкретного запуска
+    saved_model_dir_base = weights_base_dir / main_config['saved_model_dir'] # Базовая папка для сохранения модели
+
     log_dir_run.mkdir(parents=True, exist_ok=True)
-    saved_model_dir.mkdir(parents=True, exist_ok=True)
+    saved_model_dir_base.mkdir(parents=True, exist_ok=True)
+
     logger.info(f"Логи будут сохраняться в: {log_dir_run}")
-    logger.info(f"Веса модели будут сохраняться в: {saved_model_dir}")
+    logger.info(f"Веса модели будут сохраняться в: {saved_model_dir_base}")
 
     # 4. Создание датасетов
     batch_size = main_config.get('batch_size', 8)
-    use_augmentation_train = main_config.get('use_augmentation', True)
+    use_augmentation_train = main_config.get('use_augmentation', True) # По умолчанию используем аугментацию для тренировки
 
     logger.info(f"Создание тренировочного датасета (batch_size={batch_size}, augmentation={use_augmentation_train})...")
 
-    # Генерируем all_anchors один раз
-    all_anchors_for_generator = generate_all_anchors(
-        main_config['input_shape'], [8, 16, 32],
-        main_config['anchor_scales'], main_config['anchor_ratios']
+    # Генерируем all_anchors один раз для датасетов и функции потерь
+    all_anchors_for_dataset_and_loss = generate_all_anchors(
+        main_config['input_shape'], [8, 16, 32], # FPN strides жестко заданы, должны соответствовать модели
+        main_config['anchor_scales'], # Скалярные множители
+        main_config['anchor_ratios']  # Соотношения сторон
     )
 
-    # Создаем экземпляр DataGenerator для получения размера
-    train_generator_instance = DataGenerator( # Используем импортированный DataGenerator
+    # [ИСПРАВЛЕНО] Расчет steps_per_epoch на основе размера генератора
+    train_generator_instance = DataGenerator(
         config=main_config,
-        all_anchors=all_anchors_for_generator, # Передаем якоря
+        all_anchors=all_anchors_for_dataset_and_loss, # Передаем якоря
         is_training=True,
-        debug_mode=False
+        debug_mode=False # Обычный режим для тренировки
     )
     train_dataset_size = len(train_generator_instance)
-    del train_generator_instance
+    # Используем консервативную оценку (floor)
+    steps_per_epoch = calculate_steps(train_dataset_size, batch_size)
+    del train_generator_instance # Очищаем память
 
-    # Теперь создаем tf.data.Dataset
+    # Теперь создаем tf.data.Dataset для тренировки
     train_dataset = create_dataset(
         main_config,
         is_training=True,
         batch_size=batch_size,
         debug_mode=False
-        # shuffle_seed и aug_seed не передаются, если create_dataset их не принимает
     )
+    logger.info(f"Тренировочный датасет: {train_dataset_size} изображений, batch_size={batch_size}, шагов в эпоху={steps_per_epoch}.")
 
-    logger.info(f"Тренировочный датасет: {train_dataset_size} изображений, batch_size={batch_size}.")
-    steps_per_epoch = calculate_steps(train_dataset_size, batch_size)
-    logger.info(f"Шагов в эпоху тренировки: {steps_per_epoch}")
-
+    # Валидационный датасет
     logger.info(f"Создание валидационного датасета (batch_size={batch_size}, augmentation=False)...")
     val_generator_instance = DataGenerator(
         config=main_config,
-        all_anchors=all_anchors_for_generator,
+        all_anchors=all_anchors_for_dataset_and_loss, # Передаем те же якоря
         is_training=False,
-        debug_mode=False
+        debug_mode=False # Обычный режим для валидации
     )
     val_dataset_size = len(val_generator_instance)
+    validation_steps = calculate_steps(val_dataset_size, batch_size)
     del val_generator_instance
+    logger.info(f"Валидационный датасет: {val_dataset_size} изображений, batch_size={batch_size}, шагов в эпоху={validation_steps}.")
 
     val_dataset = create_dataset(
         main_config,
@@ -195,150 +303,234 @@ def train_detector(main_config_path, predict_config_path, run_seed=None):
         debug_mode=False
     )
 
-    logger.info(f"Валидационный датасет: {val_dataset_size} изображений, batch_size={batch_size}.")
-    validation_steps = calculate_steps(val_dataset_size, batch_size)
-    logger.info(f"Шагов в эпоху валидации: {validation_steps}")
-
     if steps_per_epoch == 0: logger.error("Тренировочный датасет пустой!"); sys.exit(1)
-    if validation_steps == 0: logger.warning("Валидационный датасет пустой!")
+    if validation_steps == 0: logger.warning("Валидационный датасет пустой! Метрики валидации будут недоступны.")
 
     # 5. Создание модели
+    # ... (остается без изменений) ...
     logger.info("Создание модели...")
     model = build_detector_v3_standard(main_config)
     logger.info("Модель создана.")
     model.summary(print_fn=lambda x: logger.info(x))
 
-    # 6. Настройка Callbacks
-    logger.info("Настройка коллбэков...")
-    # ИСПРАВЛЕНО: Имя файла для ModelCheckpoint
-    base_filename_for_checkpoint = Path(main_config['best_model_filename']).stem
-    checkpoint_filename_h5 = f"{base_filename_for_checkpoint}.weights.h5" # Используем .weights.h5
-    checkpoint_filepath = os.path.join(str(saved_model_dir), checkpoint_filename_h5)
-    logger.info(f"Путь для сохранения чекпоинта: {checkpoint_filepath}")
+    # 6. Создание функции потерь
+    # ... (остается без изменений) ...
+    loss_fn = DetectorLoss(main_config, all_anchors=all_anchors_for_dataset_and_loss)
+    logger.info("Функция потерь DetectorLoss создана.")
 
-    callbacks = [
-        tf.keras.callbacks.TensorBoard(log_dir=str(log_dir_run), histogram_freq=1),
-        tf.keras.callbacks.ModelCheckpoint(
-            filepath=str(checkpoint_filepath),
-            save_weights_only=True,
-            monitor='val_loss',
-            mode='min',
-            save_best_only=True,
-            verbose=1
-        ),
-        # [ИЗМЕНЕНИЕ] Добавляем EarlyStopping
-        tf.keras.callbacks.EarlyStopping(
-            monitor='val_loss',
-            # Используем .get() для безопасности, если параметра вдруг нет
-            patience=main_config.get('early_stopping_patience', 20),
-            min_delta=main_config.get('early_stopping_min_delta', 0.0001),
-            mode='min',
-            verbose=1,
-            restore_best_weights=True  # Это самый важный параметр!
-        )
-    ]
 
     # 7. Фаза 1: Обучение с замороженным Backbone
     logger.info("--- Фаза 1: Обучение с замороженным Backbone ---")
+
+    # Используем вспомогательную функцию для надежной заморозки
+    # Замораживаем Backbone и все BN-слои по префиксу, если это указано в конфиге
+    if main_config.get('freeze_backbone', True):
+        # Для EfficientNet слои начинаются с 'block' и 'stem'
+        _freeze_backbone(model, prefix='block')
+        _freeze_backbone(model, prefix='stem')
+    else:
+        logger.info("Backbone не замораживается для Фазы 1 (freeze_backbone=False в конфиге).")
+
+
+    # Компиляция для Фазы 1
     optimizer_phase1 = tfa.optimizers.AdamW(
         learning_rate=main_config['initial_learning_rate'],
-        weight_decay=main_config.get('weight_decay', 1e-4)
+        weight_decay=main_config.get('weight_decay', 1e-4),
+        clipnorm=main_config.get('clipnorm', 1.0)
     )
-
-    all_anchors = generate_all_anchors(
-        main_config['input_shape'], [8, 16, 32],
-        main_config['anchor_scales'], main_config['anchor_ratios']
-    )
-
-    loss_fn = DetectorLoss(main_config, all_anchors=all_anchors)
 
     model.compile(optimizer=optimizer_phase1, loss_fn=loss_fn)
-
     logger.info("Модель скомпилирована для Фазы 1.")
 
-    logger.info("Замораживаем ВСЕ слои BatchNormalization в модели...")
-    for layer in model.layers:
-        if isinstance(layer, tf.keras.layers.BatchNormalization):
-            layer.trainable = False
-        # Дополнительно проходим по вложенным моделям (backbone, heads)
-        if hasattr(layer, 'layers'):
-            for sub_layer in layer.layers:
-                if isinstance(sub_layer, tf.keras.layers.BatchNormalization):
-                    sub_layer.trainable = False
+    # 8. Настройка Callbacks для Фазы 1
+    logger.info("Настройка коллбэков для Фазы 1...")
 
-    lr_scheduler_phase1 = WarmupCosineDecay(
-        initial_lr=main_config['initial_learning_rate'], total_epochs=main_config['epochs_phase1'],
-        steps_per_epoch=steps_per_epoch, warmup_epochs=main_config.get('warmup_epochs', 0), name='LR_Phase1'
+    # TensorBoard callback может быть общим для обеих фаз
+    tensorboard_callback = tf.keras.callbacks.TensorBoard(
+        log_dir=str(log_dir_run),
+        histogram_freq=main_config.get('tensorboard_histogram_freq', 1),
+        update_freq='epoch'
     )
-    callbacks_phase1 = callbacks + [lr_scheduler_phase1]
+
+    # Создаем НОВЫЙ объект ModelCheckpoint для Фазы 1
+    checkpoint_filename_h5_phase1 = main_config.get('best_model_filename', 'best_model.weights.h5')
+    if not str(checkpoint_filename_h5_phase1).lower().endswith(('.h5', '.weights.h5')):
+         checkpoint_filename_h5_phase1 += '.weights.h5'
+    checkpoint_filepath_phase1 = os.path.join(str(saved_model_dir_base), checkpoint_filename_h5_phase1)
+    logger.info(f"Путь для сохранения чекпоинта Фазы 1: {checkpoint_filepath_phase1}")
+
+    model_checkpoint_callback_phase1 = tf.keras.callbacks.ModelCheckpoint(
+        filepath=checkpoint_filepath_phase1,
+        save_weights_only=True,
+        monitor='val_loss' if validation_steps > 0 else 'loss',
+        mode='min',
+        save_best_only=True, # Сохраняем только лучшую
+        verbose=1
+    )
+
+    # Создаем НОВЫЙ объект EarlyStopping для Фазы 1
+    early_stopping_callback_phase1 = tf.keras.callbacks.EarlyStopping(
+        monitor='val_loss' if validation_steps > 0 else 'loss',
+        patience=main_config.get('early_stopping_patience', 20), # Количество эпох без улучшения
+        min_delta=main_config.get('early_stopping_min_delta', 0.0001),
+        mode='min',
+        verbose=1,
+        restore_best_weights=True # Важно!
+    )
+
+    # LR Scheduler для Фазы 1
+    # [ИСПРАВЛЕНИЕ] LR Scheduler должен использовать консервативное значение steps_per_epoch
+    lr_scheduler_phase1 = WarmupCosineDecay(
+        initial_lr=main_config['initial_learning_rate'],
+        total_epochs=main_config['epochs_phase1'], # Длительность Фазы 1
+        steps_per_epoch=steps_per_epoch, # Передаем рассчитанное значение
+        warmup_epochs=main_config.get('warmup_epochs', 0), # Warmup из конфига
+        name='LR_Phase1'
+    )
+
+    # [ИЗМЕНЕНО] Собираем список коллбэков, исключая кастомные логгеры
+    callbacks_phase1 = [
+        tensorboard_callback,
+        model_checkpoint_callback_phase1,
+        early_stopping_callback_phase1,
+        lr_scheduler_phase1,
+    ]
+
+    # 9. Обучение Фазы 1
     logger.info(f"Начинаем Фазу 1 обучения на {main_config['epochs_phase1']} эпохах...")
-    model.fit(
-        train_dataset, epochs=main_config['epochs_phase1'], steps_per_epoch=steps_per_epoch,
+    # [ИСПРАВЛЕНО] ВОЗВРАЩАЕМ steps_per_epoch и validation_steps в model.fit
+    history1 = model.fit(
+        train_dataset,
+        epochs=main_config['epochs_phase1'],
+        steps_per_epoch=steps_per_epoch, # Обязательно для бесконечного датасета
         validation_data=val_dataset if validation_steps > 0 else None,
         validation_steps=validation_steps if validation_steps > 0 else None,
-        callbacks=callbacks_phase1, verbose=1
+        callbacks=callbacks_phase1,
+        verbose=1 # Логгировать прогресс
     )
     logger.info("Фаза 1 обучения завершена.")
 
-    # 8. Фаза 2: Fine-tuning
+    # 10. Фаза 2: Fine-tuning
     logger.info("--- Фаза 2: Fine-tuning с размороженным Backbone ---")
-    if Path(checkpoint_filepath).exists():
-        logger.info(f"Загрузка лучших весов с Фазы 1 из: {checkpoint_filepath}")
-        model.load_weights(checkpoint_filepath)
+
+    # Загружаем лучшие веса с Фазы 1
+    if Path(checkpoint_filepath_phase1).exists():
+        logger.info(f"Загрузка лучших весов с Фазы 1 из: {checkpoint_filepath_phase1}")
+        model.load_weights(checkpoint_filepath_phase1)
     else:
-        logger.warning(f"Чекпоинт Фазы 1 не найден: {checkpoint_filepath}. Продолжаем с текущими весами.")
+        logger.warning(f"Чекпоинт Фазы 1 не найден: {checkpoint_filepath_phase1}. Продолжаем с весами последней эпохи Фазы 1.")
 
+    # [ИСПРАВЛЕНО] Размораживаем все слои модели
     model.trainable = True
-    backbone_layer_name = main_config.get('backbone_layer_name', 'efficientnetb0')
-    try:
-        model.get_layer(backbone_layer_name).trainable = True
-        logger.info(f"Backbone '{backbone_layer_name}' разморожен для Фазы 2.")
-    except ValueError:
-        logger.warning(f"Backbone '{backbone_layer_name}' не найден. Вся модель уже trainable.")
+    logger.info("Все слои модели разморожены для Фазы 2.")
 
+    # Компиляция для Фазы 2
     optimizer_phase2 = tfa.optimizers.AdamW(
         learning_rate=main_config['fine_tune_learning_rate'],
-        weight_decay=main_config.get('weight_decay', 1e-4)
+        weight_decay=main_config.get('weight_decay', 1e-4),
+        clipnorm=main_config.get('clipnorm', 1.0)
     )
-
-    loss_fn = DetectorLoss(main_config, all_anchors=all_anchors)
-
-    model.compile(optimizer=optimizer_phase2, loss_fn=loss_fn)
-
-    logger.info("Модель скомпилирована для Фазы 2 с новым LR.")
-    lr_scheduler_phase2 = WarmupCosineDecay(
-        initial_lr=main_config['fine_tune_learning_rate'], total_epochs=main_config['epochs_phase2'],
-        steps_per_epoch=steps_per_epoch, warmup_epochs=main_config.get('warmup_epochs_phase2', 0), name='LR_Phase2'
-    )
-    callbacks_phase2 = callbacks + [lr_scheduler_phase2]
-    logger.info(f"Начинаем Фазу 2 обучения на {main_config['epochs_phase2']} эпохах...")
-
-    logger.info("Сброс итераций оптимизатора для корректной работы LR-шедулера...")
+    # [ИСПРАВЛЕНО] Сбрасываем счетчик итераций оптимизатора
+    logger.info("Сброс счетчика итераций оптимизатора для Фазы 2...")
     optimizer_phase2.iterations.assign(0)
 
-    model.fit(
-        train_dataset, epochs=main_config['epochs_phase1'] + main_config['epochs_phase2'],
+    model.compile(optimizer=optimizer_phase2, loss_fn=loss_fn) # Используем ту же функцию потерь
+    logger.info("Модель скомпилирована для Фазы 2 с более низким LR.")
+
+    # 11. Настройка Callbacks для Фазы 2
+    logger.info("Настройка коллбэков для Фазы 2...")
+
+    # [ИСПРАВЛЕНО] Создаем НОВЫЙ объект ModelCheckpoint для Фазы 2
+    # Используем то же имя файла, чтобы лучшие веса Фазы 2 перезаписали веса Фазы 1, если они лучше
+    checkpoint_filepath_phase2 = checkpoint_filepath_phase1
+    logger.info(f"Путь для сохранения чекпоинта Фазы 2: {checkpoint_filepath_phase2}")
+
+    model_checkpoint_callback_phase2 = tf.keras.callbacks.ModelCheckpoint(
+        filepath=checkpoint_filepath_phase2,
+        save_weights_only=True,
+        monitor='val_loss' if validation_steps > 0 else 'loss',
+        mode='min',
+        save_best_only=True,
+        verbose=1
+    )
+
+    # [ИСПРАВЛЕНО] Создаем НОВЫЙ объект EarlyStopping для Фазы 2
+    early_stopping_callback_phase2 = tf.keras.callbacks.EarlyStopping(
+        monitor='val_loss' if validation_steps > 0 else 'loss',
+        patience=main_config.get('early_stopping_patience', 20),
+        min_delta=main_config.get('early_stopping_min_delta', 0.0001),
+        mode='min',
+        verbose=1,
+        restore_best_weights=True # Восстановить веса лучшей эпохи при остановке
+    )
+
+    # LR Scheduler для Фазы 2
+    lr_scheduler_phase2 = WarmupCosineDecay(
+        initial_lr=main_config['fine_tune_learning_rate'],
+        total_epochs=main_config['epochs_phase2'],
+        steps_per_epoch=steps_per_epoch, # Используем тот же steps_per_epoch
+        warmup_epochs=main_config.get('warmup_epochs_phase2', 0),
+        name='LR_Phase2'
+    )
+
+    # [ИЗМЕНЕНО] Собираем список коллбэков, исключая кастомные логгеры
+    callbacks_phase2 = [
+        tensorboard_callback, # Используем тот же TensorBoard callback
+        model_checkpoint_callback_phase2,
+        early_stopping_callback_phase2,
+        lr_scheduler_phase2,
+    ]
+
+
+    # 12. Обучение Фазы 2
+    logger.info(f"Начинаем Фазу 2 обучения на {main_config['epochs_phase2']} эпохах...")
+    # [ИСПРАВЛЕНО] ВОЗВРАЩАЕМ steps_per_epoch и validation_steps в model.fit
+    history2 = model.fit(
+        train_dataset,
+        epochs=main_config['epochs_phase1'] + main_config['epochs_phase2'],
         initial_epoch=main_config['epochs_phase1'],
-        steps_per_epoch=steps_per_epoch,
+        steps_per_epoch=steps_per_epoch, # Обязательно для бесконечного датасета
         validation_data=val_dataset if validation_steps > 0 else None,
         validation_steps=validation_steps if validation_steps > 0 else None,
-        callbacks=callbacks_phase2, verbose=1
+        callbacks=callbacks_phase2,
+        verbose=1
     )
     logger.info("Фаза 2 обучения завершена.")
+
     logger.info("--- Обучение детектора завершено ---")
 
-    final_weights_path = os.path.join(str(saved_model_dir), 'final_model_weights.keras') # Можно оставить .keras для финальных весов
-    try: model.save_weights(final_weights_path); logger.info(f"Финальные веса сохранены: {final_weights_path}")
-    except Exception as e: logger.error(f"Ошибка сохранения финальных весов: {e}")
+    # Optional: Save the final model weights
+    final_weights_path = os.path.join(str(saved_model_dir_base), 'final_model_weights.weights.h5') # Используем .weights.h5
+    try:
+        model.save_weights(final_weights_path)
+        logger.info(f"Финальные веса модели сохранены в: {final_weights_path}")
+    except Exception as e:
+        logger.error(f"Ошибка сохранения финальных весов: {e}")
 
 
 # --- Точка входа скрипта ---
 if __name__ == '__main__':
+    # Настройка логирования в консоль для запуска как main скрипт
+    # Проверяем, не настроено ли уже (например, при запуске из другого скрипта)
     if not logging.getLogger().handlers:
         logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-        logger = logging.getLogger(__name__)
+        logger = logging.getLogger(__name__) # Получим логгер еще раз после настройки
+
     logger.info("Запуск train_detector_v3_standard.py как основного скрипта.")
+
+    # --- Пути к конфигам ---
+    # Предполагаем, что конфиги находятся в src/configs относительно PROJECT_ROOT
     MAIN_CONFIG_PATH = PROJECT_ROOT / "src" / "configs" / "detector_config_v3_standard.yaml"
-    PREDICT_CONFIG_PATH = PROJECT_ROOT / "src" / "configs" / "predict_config.yaml"
+    PREDICT_CONFIG_PATH = PROJECT_ROOT / "src" / "configs" / "predict_config.yaml" # predict_config нужен для evaluation/postprocessing params
+
+    # --- Параметры запуска тренировки ---
+    # Установить сид для воспроизводимости запуска (влияет на инициализацию весов, перемешивание датасета и аугментацию)
+    # None для случайного запуска
     RUN_SEED = 42
-    train_detector(main_config_path=MAIN_CONFIG_PATH, predict_config_path=PREDICT_CONFIG_PATH, run_seed=RUN_SEED)
+
+    # Запускаем тренировку
+    train_detector(
+        main_config_path=MAIN_CONFIG_PATH,
+        predict_config_path=PREDICT_CONFIG_PATH,
+        run_seed=RUN_SEED
+    )
