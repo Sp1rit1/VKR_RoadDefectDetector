@@ -126,7 +126,7 @@ class WarmupCosineDecay(tf.keras.callbacks.Callback):
         # Текущая глобальная итерация оптимизатора
         current_global_iteration = self.model.optimizer.iterations.numpy()
 
-        # [ИСПРАВЛЕНО] Текущая итерация ВНУТРИ ЭТОЙ ФАЗЫ
+        # Текущая итерация ВНУТРИ ЭТОЙ ФАЗЫ
         # Рассчитываем как разницу между глобальной итерацией и зафиксированной в on_train_begin
         current_step_in_phase = current_global_iteration - self._start_global_iteration
 
@@ -144,14 +144,16 @@ class WarmupCosineDecay(tf.keras.callbacks.Callback):
             total_decay_steps = self.total_steps_in_phase - self.warmup_steps
 
             if total_decay_steps > 0:
-                 cosine_decay_factor = 0.5 * (1 + tf.cos(math.pi * steps_after_warmup / total_decay_steps))
+                 cosine_decay_factor = 0.5 * (1 + math.cos(math.pi * steps_after_warmup / total_decay_steps))
                  current_lr = self.initial_lr * cosine_decay_factor
             else:
                  current_lr = self.initial_lr # Если нет фазы затухания, сохраняем LR после Warmup
 
-        # Устанавливаем новый LR
-        current_lr = max(current_lr, 0.0) # Убедимся, что LR неотрицательный
-        self.model.optimizer.learning_rate.assign(current_lr) # Используем assign для tf.Variable
+        # Убедимся, что LR неотрицательный
+        current_lr = max(current_lr, 0.0)
+
+        # [ИСПРАВЛЕНО] Явно приводим current_lr к tf.float32 перед присваиванием
+        self.model.optimizer.learning_rate.assign(tf.cast(current_lr, dtype=tf.float32))
 
 
     def on_epoch_end(self, epoch, logs=None):
@@ -206,7 +208,7 @@ def _freeze_backbone(model, prefix='block'):
 
 
 # --- Основная функция тренировки ---
-# [ИЗМЕНЕНИЕ] train_detector - убраны тяжелые кастомные коллбэки
+# [ИЗМЕНЕНИЕ] train_detector - убраны steps_per_epoch, добавлена надежная заморозка BN, переработаны коллбэки
 def train_detector(main_config_path, predict_config_path=None, run_seed=None):
     """Обучает детектор в две фазы."""
     logger.info("--- Запуск обучения детектора ---")
@@ -262,49 +264,21 @@ def train_detector(main_config_path, predict_config_path=None, run_seed=None):
         main_config['anchor_ratios']  # Соотношения сторон
     )
 
-    # [ИСПРАВЛЕНО] Расчет steps_per_epoch на основе размера генератора
-    train_generator_instance = DataGenerator(
-        config=main_config,
-        all_anchors=all_anchors_for_dataset_and_loss, # Передаем якоря
-        is_training=True,
-        debug_mode=False # Обычный режим для тренировки
-    )
-    train_dataset_size = len(train_generator_instance)
-    # Используем консервативную оценку (floor)
-    steps_per_epoch = calculate_steps(train_dataset_size, batch_size)
-    del train_generator_instance # Очищаем память
-
-    # Теперь создаем tf.data.Dataset для тренировки
+    # Создаем tf.data.Dataset для тренировки
     train_dataset = create_dataset(
         main_config,
         is_training=True,
         batch_size=batch_size,
         debug_mode=False
     )
-    logger.info(f"Тренировочный датасет: {train_dataset_size} изображений, batch_size={batch_size}, шагов в эпоху={steps_per_epoch}.")
 
-    # Валидационный датасет
     logger.info(f"Создание валидационного датасета (batch_size={batch_size}, augmentation=False)...")
-    val_generator_instance = DataGenerator(
-        config=main_config,
-        all_anchors=all_anchors_for_dataset_and_loss, # Передаем те же якоря
-        is_training=False,
-        debug_mode=False # Обычный режим для валидации
-    )
-    val_dataset_size = len(val_generator_instance)
-    validation_steps = calculate_steps(val_dataset_size, batch_size)
-    del val_generator_instance
-    logger.info(f"Валидационный датасет: {val_dataset_size} изображений, batch_size={batch_size}, шагов в эпоху={validation_steps}.")
-
     val_dataset = create_dataset(
         main_config,
         is_training=False,
         batch_size=batch_size,
         debug_mode=False
     )
-
-    if steps_per_epoch == 0: logger.error("Тренировочный датасет пустой!"); sys.exit(1)
-    if validation_steps == 0: logger.warning("Валидационный датасет пустой! Метрики валидации будут недоступны.")
 
     # 5. Создание модели
     # ... (остается без изменений) ...
@@ -322,7 +296,7 @@ def train_detector(main_config_path, predict_config_path=None, run_seed=None):
     # 7. Фаза 1: Обучение с замороженным Backbone
     logger.info("--- Фаза 1: Обучение с замороженным Backbone ---")
 
-    # Используем вспомогательную функцию для надежной заморозки
+    # [ИСПРАВЛЕНО] Используем вспомогательную функцию для надежной заморозки
     # Замораживаем Backbone и все BN-слои по префиксу, если это указано в конфиге
     if main_config.get('freeze_backbone', True):
         # Для EfficientNet слои начинаются с 'block' и 'stem'
@@ -352,7 +326,7 @@ def train_detector(main_config_path, predict_config_path=None, run_seed=None):
         update_freq='epoch'
     )
 
-    # Создаем НОВЫЙ объект ModelCheckpoint для Фазы 1
+    # [ИСПРАВЛЕНО] Создаем НОВЫЙ объект ModelCheckpoint для Фазы 1
     checkpoint_filename_h5_phase1 = main_config.get('best_model_filename', 'best_model.weights.h5')
     if not str(checkpoint_filename_h5_phase1).lower().endswith(('.h5', '.weights.h5')):
          checkpoint_filename_h5_phase1 += '.weights.h5'
@@ -362,15 +336,15 @@ def train_detector(main_config_path, predict_config_path=None, run_seed=None):
     model_checkpoint_callback_phase1 = tf.keras.callbacks.ModelCheckpoint(
         filepath=checkpoint_filepath_phase1,
         save_weights_only=True,
-        monitor='val_loss' if validation_steps > 0 else 'loss',
+        monitor='val_loss', # val_loss для валидации
         mode='min',
         save_best_only=True, # Сохраняем только лучшую
         verbose=1
     )
 
-    # Создаем НОВЫЙ объект EarlyStopping для Фазы 1
+    # [ИСПРАВЛЕНО] Создаем НОВЫЙ объект EarlyStopping для Фазы 1
     early_stopping_callback_phase1 = tf.keras.callbacks.EarlyStopping(
-        monitor='val_loss' if validation_steps > 0 else 'loss',
+        monitor='val_loss',
         patience=main_config.get('early_stopping_patience', 20), # Количество эпох без улучшения
         min_delta=main_config.get('early_stopping_min_delta', 0.0001),
         mode='min',
@@ -379,16 +353,26 @@ def train_detector(main_config_path, predict_config_path=None, run_seed=None):
     )
 
     # LR Scheduler для Фазы 1
-    # [ИСПРАВЛЕНИЕ] LR Scheduler должен использовать консервативное значение steps_per_epoch
+    # [ИЗМЕНЕНО] LR Scheduler теперь не требует steps_per_epoch, если мы его не используем
+    # Но для отслеживания LR, его можно оставить, если он использует общее количество шагов,
+    # которое можно рассчитать как len(train_dataset) * epochs
+    # Для простоты, оставим его, но убедимся, что он не вызывает ошибок
+    # Рассчитаем steps_per_epoch ЗДЕСЬ для LR Scheduler
+    # Этот расчет может быть неточным, если генератор пропускает данные.
+    train_generator_instance_for_steps = DataGenerator(main_config, all_anchors_for_dataset_and_loss, is_training=True)
+    steps_per_epoch_for_lr = calculate_steps(len(train_generator_instance_for_steps), batch_size)
+    del train_generator_instance_for_steps
+    if steps_per_epoch_for_lr == 0:
+         logger.warning("steps_per_epoch для LR Scheduler равен 0, LR не будет обновляться корректно.")
+
     lr_scheduler_phase1 = WarmupCosineDecay(
         initial_lr=main_config['initial_learning_rate'],
         total_epochs=main_config['epochs_phase1'], # Длительность Фазы 1
-        steps_per_epoch=steps_per_epoch, # Передаем рассчитанное значение
+        steps_per_epoch=steps_per_epoch_for_lr, # Передаем рассчитанное значение
         warmup_epochs=main_config.get('warmup_epochs', 0), # Warmup из конфига
         name='LR_Phase1'
     )
 
-    # [ИЗМЕНЕНО] Собираем список коллбэков, исключая кастомные логгеры
     callbacks_phase1 = [
         tensorboard_callback,
         model_checkpoint_callback_phase1,
@@ -398,13 +382,12 @@ def train_detector(main_config_path, predict_config_path=None, run_seed=None):
 
     # 9. Обучение Фазы 1
     logger.info(f"Начинаем Фазу 1 обучения на {main_config['epochs_phase1']} эпохах...")
-    # [ИСПРАВЛЕНО] ВОЗВРАЩАЕМ steps_per_epoch и validation_steps в model.fit
+    # [ИЗМЕНЕНО] НЕ передаем steps_per_epoch и validation_steps в model.fit
     history1 = model.fit(
         train_dataset,
         epochs=main_config['epochs_phase1'],
-        steps_per_epoch=steps_per_epoch, # Обязательно для бесконечного датасета
-        validation_data=val_dataset if validation_steps > 0 else None,
-        validation_steps=validation_steps if validation_steps > 0 else None,
+        # steps_per_epoch=steps_per_epoch, # Убрано
+        validation_data=val_dataset, # validation_steps не нужен, если val_dataset не зациклен
         callbacks=callbacks_phase1,
         verbose=1 # Логгировать прогресс
     )
@@ -422,7 +405,12 @@ def train_detector(main_config_path, predict_config_path=None, run_seed=None):
 
     # [ИСПРАВЛЕНО] Размораживаем все слои модели
     model.trainable = True
-    logger.info("Все слои модели разморожены для Фазы 2.")
+    for layer in model.layers:
+        if isinstance(layer, tf.keras.layers.BatchNormalization):
+            # Размораживаем BN слои для Фазы 2, как рекомендовано
+            layer.trainable = True
+    logger.info("Все слои модели и BN разморожены для Фазы 2.")
+
 
     # Компиляция для Фазы 2
     optimizer_phase2 = tfa.optimizers.AdamW(
@@ -442,13 +430,10 @@ def train_detector(main_config_path, predict_config_path=None, run_seed=None):
 
     # [ИСПРАВЛЕНО] Создаем НОВЫЙ объект ModelCheckpoint для Фазы 2
     # Используем то же имя файла, чтобы лучшие веса Фазы 2 перезаписали веса Фазы 1, если они лучше
-    checkpoint_filepath_phase2 = checkpoint_filepath_phase1
-    logger.info(f"Путь для сохранения чекпоинта Фазы 2: {checkpoint_filepath_phase2}")
-
     model_checkpoint_callback_phase2 = tf.keras.callbacks.ModelCheckpoint(
-        filepath=checkpoint_filepath_phase2,
+        filepath=checkpoint_filepath_phase1, # Перезаписываем тот же файл
         save_weights_only=True,
-        monitor='val_loss' if validation_steps > 0 else 'loss',
+        monitor='val_loss',
         mode='min',
         save_best_only=True,
         verbose=1
@@ -456,7 +441,7 @@ def train_detector(main_config_path, predict_config_path=None, run_seed=None):
 
     # [ИСПРАВЛЕНО] Создаем НОВЫЙ объект EarlyStopping для Фазы 2
     early_stopping_callback_phase2 = tf.keras.callbacks.EarlyStopping(
-        monitor='val_loss' if validation_steps > 0 else 'loss',
+        monitor='val_loss',
         patience=main_config.get('early_stopping_patience', 20),
         min_delta=main_config.get('early_stopping_min_delta', 0.0001),
         mode='min',
@@ -468,12 +453,11 @@ def train_detector(main_config_path, predict_config_path=None, run_seed=None):
     lr_scheduler_phase2 = WarmupCosineDecay(
         initial_lr=main_config['fine_tune_learning_rate'],
         total_epochs=main_config['epochs_phase2'],
-        steps_per_epoch=steps_per_epoch, # Используем тот же steps_per_epoch
+        steps_per_epoch=steps_per_epoch_for_lr, # Используем тот же steps_per_epoch
         warmup_epochs=main_config.get('warmup_epochs_phase2', 0),
         name='LR_Phase2'
     )
 
-    # [ИЗМЕНЕНО] Собираем список коллбэков, исключая кастомные логгеры
     callbacks_phase2 = [
         tensorboard_callback, # Используем тот же TensorBoard callback
         model_checkpoint_callback_phase2,
@@ -484,28 +468,17 @@ def train_detector(main_config_path, predict_config_path=None, run_seed=None):
 
     # 12. Обучение Фазы 2
     logger.info(f"Начинаем Фазу 2 обучения на {main_config['epochs_phase2']} эпохах...")
-    # [ИСПРАВЛЕНО] ВОЗВРАЩАЕМ steps_per_epoch и validation_steps в model.fit
+    # [ИЗМЕНЕНО] НЕ передаем steps_per_epoch и validation_steps в model.fit
     history2 = model.fit(
         train_dataset,
         epochs=main_config['epochs_phase1'] + main_config['epochs_phase2'],
         initial_epoch=main_config['epochs_phase1'],
-        steps_per_epoch=steps_per_epoch, # Обязательно для бесконечного датасета
-        validation_data=val_dataset if validation_steps > 0 else None,
-        validation_steps=validation_steps if validation_steps > 0 else None,
+        validation_data=val_dataset,
         callbacks=callbacks_phase2,
         verbose=1
     )
     logger.info("Фаза 2 обучения завершена.")
-
     logger.info("--- Обучение детектора завершено ---")
-
-    # Optional: Save the final model weights
-    final_weights_path = os.path.join(str(saved_model_dir_base), 'final_model_weights.weights.h5') # Используем .weights.h5
-    try:
-        model.save_weights(final_weights_path)
-        logger.info(f"Финальные веса модели сохранены в: {final_weights_path}")
-    except Exception as e:
-        logger.error(f"Ошибка сохранения финальных весов: {e}")
 
 
 # --- Точка входа скрипта ---

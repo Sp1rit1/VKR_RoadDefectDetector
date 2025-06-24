@@ -773,10 +773,11 @@ def create_dataset(config, is_training=True, batch_size=8, debug_mode=False) -> 
 
     # Зацикливаем датасет для обучения
     if is_training:
-        dataset = dataset.repeat() # Зацикливаем тренировочный датасет
+        # [ИСПРАВЛЕНО] УДАЛЕН .repeat()
+        # dataset = dataset.repeat() # Зацикливаем тренировочный датасет
 
         # Перемешиваем
-        # [ИСПРАВЛЕНИЕ] Буфер перемешивания не может быть меньше 2.
+        # [ИСПРАВЛЕНО] Буфер перемешивания не может быть меньше 2.
         # Используем max(2, ...)
         buffer_size = max(2, min(len(generator_instance), batch_size * 3))
         if len(generator_instance) > 1: # Перемешиваем только если есть что перемешивать
@@ -788,7 +789,7 @@ def create_dataset(config, is_training=True, batch_size=8, debug_mode=False) -> 
 
     # Батчим данные.
     # [ИСПРАВЛЕНО] drop_remainder=False для всех случаев, как в предложенном коде.
-    # Это предотвращает потерю примеров в последнем батче, особенно на валидации, и ошибку OutOfRangeError.
+    # Это предотвращает потерю примеров в последнем батче, особенно на валидации.
     dataset = dataset.batch(batch_size, drop_remainder=False)
     logging.info(f"Batching настроен: batch_size={batch_size}, drop_remainder=False")
 
