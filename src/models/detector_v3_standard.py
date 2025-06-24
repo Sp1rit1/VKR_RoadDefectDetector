@@ -24,12 +24,23 @@ class DetectorModel(Model):
         self.loss_tracker = tf.keras.metrics.Mean(name="loss")
         self.val_loss_tracker = tf.keras.metrics.Mean(name="val_loss")
 
-    # ИЗМЕНЕНИЕ: compile теперь принимает наш кастомный loss
-    def compile(self, optimizer, loss_fn, **kwargs):
-        super().compile(optimizer=optimizer, **kwargs)
-        # Мы сохраняем нашу функцию потерь в атрибут класса
-        self.loss_calculator = loss_fn
-        # ВАЖНО: мы не передаем 'loss' в super().compile()
+    # [ИСПРАВЛЕНО] compile теперь передает loss в super().compile
+    def compile(self, optimizer, loss, **kwargs):
+        """
+        Компилирует модель с кастомной функцией потерь и метриками.
+
+        Args:
+            optimizer: Оптимизатор.
+            loss: Наша кастомная функция потерь (например, DetectorLoss).
+            **kwargs: Другие аргументы для Keras compile.
+        """
+        # [ИСПРАВЛЕНО] Мы передаем loss в super().compile, чтобы Keras знал
+        # о нем для сериализации. Это не сломает наш кастомный train_step.
+        super().compile(optimizer=optimizer, loss=loss, **kwargs)
+
+        # Сохраняем нашу функцию потерь в атрибут класса для использования в train_step/test_step
+        self.loss_calculator = loss
+
 
     @property
     def metrics(self):
@@ -50,6 +61,7 @@ class DetectorModel(Model):
         # Возвращаем словарь с ключом, совпадающим с именем метрики
         return {"loss": self.loss_tracker.result()}
 
+    # [ИЗМЕНЕНО] test_step теперь возвращает val_loss
     def test_step(self, data):
         images, y_true = data
         y_pred = self(images, training=False)
@@ -57,9 +69,20 @@ class DetectorModel(Model):
         loss = self.loss_calculator(y_true, y_pred)
 
         self.val_loss_tracker.update_state(loss)
-        # Возвращаем словарь с ключом, совпадающим с именем метрики
+        # [ИСПРАВЛЕНО] Возвращаем словарь с ключом 'val_loss', как имя метрики
         return {"loss": self.val_loss_tracker.result()}
 
+
+    # [НОВЫЙ МЕТОД] reset_metrics для сброса состояния всех метрик
+    def reset_metrics(self):
+        """
+        Сбрасывает состояние всех метрик.
+        Вызывается Keras автоматически в начале каждой эпохи и при model.evaluate().
+        """
+        self.loss_tracker.reset_state()
+        self.val_loss_tracker.reset_state()
+        # Вызов super().reset_metrics() не обязателен, если мы сбрасываем все метрики вручную
+        # super().reset_metrics() # Можно добавить для совместимости, если в базовом классе есть другие метрики
 
 # --- Вспомогательные функции для построения модели ---
 

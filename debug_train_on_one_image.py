@@ -186,41 +186,22 @@ def train_on_one_image_final_attempt(main_config, predict_config, image_name, us
         main_config['anchor_positive_iou_threshold'], main_config['anchor_ignore_iou_threshold']
     )
 
-    y_true_cls_flat, y_true_reg_flat = np.zeros((all_anchors_np.shape[0], main_config['num_classes']),
+    y_true_cls_flat_np, y_true_reg_flat_np = np.zeros((all_anchors_np.shape[0], main_config['num_classes']),
                                                 dtype=np.float32), np.zeros((all_anchors_np.shape[0], 4),
                                                                             dtype=np.float32)
     positive_indices = np.where(anchor_labels == 1)[0]
     if len(positive_indices) > 0:
-        y_true_cls_flat[positive_indices] = tf.keras.utils.to_categorical(matched_gt_class_ids[positive_indices],
+        y_true_cls_flat_np[positive_indices] = tf.keras.utils.to_categorical(matched_gt_class_ids[positive_indices],
                                                                           num_classes=main_config['num_classes'])
-        y_true_reg_flat[positive_indices] = encode_box_targets(all_anchors_np[positive_indices],
+        y_true_reg_flat_np[positive_indices] = encode_box_targets(all_anchors_np[positive_indices],
                                                                matched_gt_boxes[positive_indices])
-    y_true_cls_flat[np.where(anchor_labels == 0)[0]] = -1.0
+    y_true_cls_flat_np[np.where(anchor_labels == 0)[0]] = -1.0
 
-    # --- [ИЗМЕНЕНИЕ] Разбиваем "плоские" y_true на 6 частей, как в data_loader ---
-    logger.info("Разбиваем y_true на 6 частей для соответствия выходу модели...")
-    anchor_counts_per_level, output_shapes_per_level = [], []
-    num_base_anchors = main_config['num_anchors_per_level']
-    fpn_strides = [8, 16, 32]
-    for stride in fpn_strides:
-        fh, fw = h_target // stride, w_target // stride
-        anchor_counts_per_level.append(fh * fw * num_base_anchors)
-        output_shapes_per_level.append((fh, fw, num_base_anchors))
-
-    y_reg_split = tf.split(y_true_reg_flat, anchor_counts_per_level, axis=0)
-    y_cls_split = tf.split(y_true_cls_flat, anchor_counts_per_level, axis=0)
-
-    y_true_final_list = []
-    for i in range(len(fpn_strides)):
-        y_true_final_list.append(tf.reshape(y_reg_split[i], (*output_shapes_per_level[i], 4)))
-    for i in range(len(fpn_strides)):
-        y_true_final_list.append(tf.reshape(y_cls_split[i], (*output_shapes_per_level[i], main_config['num_classes'])))
-
-    y_true_final_tuple = tuple(y_true_final_list)
-
-    # --- [ИЗМЕНЕНИЕ] Создаем датасет с новой структурой y_true ---
-    # Добавляем батч-измерение к каждому из 6 тензоров
-    y_true_batched = tuple(tf.expand_dims(t, axis=0) for t in y_true_final_tuple)
+    # [ИСПРАВЛЕНО] Создаем датасет с ДВУМЯ ПЛОСКИМИ тензорами y_true
+    y_true_batched = (
+        tf.expand_dims(tf.constant(y_true_reg_flat_np, dtype=tf.float32), axis=0),
+        tf.expand_dims(tf.constant(y_true_cls_flat_np, dtype=tf.float32), axis=0)
+    )
 
     dataset_for_training = tf.data.Dataset.from_tensors(
         (tf.expand_dims(tf.constant(image_for_training_norm, dtype=tf.float32), axis=0),

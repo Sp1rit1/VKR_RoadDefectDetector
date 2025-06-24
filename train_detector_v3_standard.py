@@ -76,70 +76,88 @@ def set_global_seed(seed):
 
 # --- Кастомный планировщик Learning Rate с Warmup и Cosine Decay ---
 class WarmupCosineDecay(tf.keras.callbacks.Callback):
-    def __init__(self, initial_lr, total_epochs, steps_per_epoch, warmup_epochs, name='WarmupCosineDecay'):
+    def __init__(self, initial_lr, total_epochs, warmup_epochs, name='WarmupCosineDecay'):
         """
         Инициализирует планировщик LR с Warmup и Cosine Decay для ОДНОЙ фазы обучения.
 
         Args:
             initial_lr (float): Максимальная скорость обучения, которая будет достигнута после warmup.
             total_epochs (int): Общее количество эпох в ТЕКУЩЕЙ фазе обучения.
-            steps_per_epoch (int): Количество шагов в одной эпохе.
             warmup_epochs (int): Количество эпох для линейного "разогрева" LR.
             name (str): Имя коллбэка.
         """
         super().__init__()
         self.initial_lr = initial_lr
         self.total_epochs_in_phase = total_epochs
-        self.steps_per_epoch = steps_per_epoch
+        self.warmup_epochs = warmup_epochs
         self.name = name
-        self.total_steps_in_phase = total_epochs * steps_per_epoch
-        self.warmup_steps = warmup_epochs * steps_per_epoch
 
-        # [ИСПРАВЛЕНО] Начальная глобальная итерация будет заполнена на on_train_begin
-        self._start_global_iteration = 0 # Используем 0 как заглушку, будет обновлено в on_train_begin
-
-        if self.warmup_steps >= self.total_steps_in_phase and self.total_steps_in_phase > 0:
-             logger.warning(f"Warmup steps ({self.warmup_steps}) >= Total steps in phase ({self.total_steps_in_phase}). Warmup будет длиться всю фазу.")
+        # Эти значения будут установлены в on_train_begin, когда будет доступен model.optimizer и self.params
+        self.steps_per_epoch = 0
+        self.total_steps_in_phase = 0
+        self.warmup_steps = 0
+        # [ИЗМЕНЕНИЕ] Локальный счетчик шагов
+        self._step = 0
 
 
     def on_train_begin(self, logs=None):
         """
-        Фиксирует "ноль" итераций в момент старта фазы обучения.
+        Фиксирует "ноль" итераций и точное количество шагов в эпоху в момент старта фазы обучения.
         Вызывается Keras в начале model.fit().
         """
         if self.model.optimizer is None:
-             logger.error("Оптимизатор не установлен в модели! LR Scheduler не будет работать.")
-             return
-        # [ИСПРАВЛЕНО] Фиксируем начальное количество итераций оптимизатора для этой фазы
-        self._start_global_iteration = self.model.optimizer.iterations.numpy()
+            logger.error("Оптимизатор не установлен в модели! LR Scheduler не будет работать.")
+            return
 
-        # Убедимся, что оптимизатор инициализирован с начальным LR (на случай, если LR был изменен)
-        # self.model.optimizer.learning_rate.assign(self.initial_lr) # Это произойдет автоматически при компиляции
+            # [ИСПРАВЛЕНО] Получаем точное количество шагов в эпоху из Keras
+            # с безопасным fallback'ом
+        if self.params.get("steps"):
+            self.steps_per_epoch = self.params['steps']
+            logger.info(f"LR Scheduler '{self.name}': Количество шагов в эпоху уточнено Keras: {self.steps_per_epoch}")
+        else:
+            logger.warning(
+                f"LR Scheduler '{self.name}': Не удалось получить точное количество шагов в эпоху от Keras. Попытка расчета из Dataset.")
+            # Безопасная оценка размера датасета, избегая приватных полей
+            try:
+                # Попробуем получить dataset через model.train_dataset (TF 2.10+)
+                card = tf.data.experimental.cardinality(self.model.train_dataset)
+                if card != tf.data.INFINITE_CARDINALITY and card.numpy() > 0:
+                    self.steps_per_epoch = int(card.numpy())
+                    logger.info(
+                        f"LR Scheduler '{self.name}': Количество шагов в эпоху рассчитано из Dataset: {self.steps_per_epoch}")
+                else:
+                    raise ValueError("Dataset cardinality is 0 or unknown.")
 
-        logger.info(f"LR Scheduler '{self.name}': Начинаем фазу. LR = {self.model.optimizer.learning_rate.numpy():.7f}, Start Iteration = {self._start_global_iteration}")
+            except (AttributeError, ValueError):
+                logger.warning("Не удалось определить размер датасета через train_dataset, используем fallback.")
+                self.steps_per_epoch = 1  # Безопасный fallback
+
+            # Пересчитываем общее количество шагов и шагов для warmup на основе точного steps_per_epoch
+        self.total_steps_in_phase = self.total_epochs_in_phase * self.steps_per_epoch
+        self.warmup_steps = self.warmup_epochs * self.steps_per_epoch
+
+        # Инициализируем локальный счетчик шагов
+        self._step = 0
+
+        logger.info(
+            f"LR Scheduler '{self.name}': Начинаем фазу. LR = {self.model.optimizer.learning_rate.numpy():.7f}, Total Steps = {self.total_steps_in_phase}")
+
 
 
     def on_train_batch_begin(self, batch, logs=None):
-        """
-        Обновляет LR для каждого шага обучения.
-        """
-        # Текущая глобальная итерация оптимизатора
-        current_global_iteration = self.model.optimizer.iterations.numpy()
 
-        # Текущая итерация ВНУТРИ ЭТОЙ ФАЗЫ
-        # Рассчитываем как разницу между глобальной итерацией и зафиксированной в on_train_begin
-        current_step_in_phase = current_global_iteration - self._start_global_iteration
+        current_step_in_phase = self._step + 1
+        # <<<----------- КОНЕЦ БЛОКА НА ВСТАВКУ ------------->
 
 
-        # Логика расчета LR остается прежней, но теперь использует current_step_in_phase
+        # Логика расчета LR (остается без изменений)
         if current_step_in_phase < self.warmup_steps:
             # Warmup phase: линейное увеличение LR
             target_lr = self.initial_lr
-            warmup_steps = self.warmup_steps # Явное использование атрибута
+            warmup_steps = self.warmup_steps
             current_lr = target_lr * (current_step_in_phase / warmup_steps) if warmup_steps > 0 else target_lr
         else:
             # Cosine Decay phase
-            # Расчет шагов в фазе затухания
             steps_after_warmup = current_step_in_phase - self.warmup_steps
             total_decay_steps = self.total_steps_in_phase - self.warmup_steps
 
@@ -147,13 +165,19 @@ class WarmupCosineDecay(tf.keras.callbacks.Callback):
                  cosine_decay_factor = 0.5 * (1 + math.cos(math.pi * steps_after_warmup / total_decay_steps))
                  current_lr = self.initial_lr * cosine_decay_factor
             else:
-                 current_lr = self.initial_lr # Если нет фазы затухания, сохраняем LR после Warmup
+                 current_lr = self.initial_lr
 
-        # Убедимся, что LR неотрицательный
+
         current_lr = max(current_lr, 0.0)
+        # [ИСПРАВЛЕНО] Проверяем тип, прежде чем вызывать .assign()
+        if isinstance(self.model.optimizer.learning_rate, tf.Variable):
+             self.model.optimizer.learning_rate.assign(tf.cast(current_lr, dtype=tf.float32))
+        else:
+             # Для LR Schedulers
+             self.model.optimizer.learning_rate = tf.cast(current_lr, dtype=tf.float32)
 
-        # [ИСПРАВЛЕНО] Явно приводим current_lr к tf.float32 перед присваиванием
-        self.model.optimizer.learning_rate.assign(tf.cast(current_lr, dtype=tf.float32))
+        # Увеличиваем локальный счетчик
+        self._step += 1
 
 
     def on_epoch_end(self, epoch, logs=None):
@@ -161,10 +185,12 @@ class WarmupCosineDecay(tf.keras.callbacks.Callback):
         Логирует LR в конце каждой эпохи.
         """
         # Логируем LR в конце каждой эпохи
-        current_lr = self.model.optimizer.learning_rate.numpy()
-        # [ИСПРАВЛЕНО] Логируем с учетом номера эпохи в ФАЗЕ + начальная эпоха
-        initial_epoch_in_fit = self.params.get('initial_epoch', 0) # Эпоха, с которой началась текущая фаза в model.fit
-        epoch_in_phase = epoch - initial_epoch_in_fit # Номер эпохи внутри текущей фазы (начиная с 0)
+        current_lr = self.model.optimizer.learning_rate
+        if isinstance(current_lr, tf.Variable):
+             current_lr = current_lr.numpy()
+        # Логируем с учетом номера эпохи в ФАЗЕ + начальная эпоха
+        initial_epoch_in_fit = self.params.get('initial_epoch', 0)
+        epoch_in_phase = epoch - initial_epoch_in_fit
 
         if logs is not None:
              logs['learning_rate'] = current_lr # Логируем в TensorBoard
@@ -181,13 +207,21 @@ def calculate_steps(dataset_size, batch_size):
     return math.floor(dataset_size / batch_size)
 
 
-def _freeze_backbone(model, prefix='block'):
+# === [НОВАЯ ФУНКЦИЯ] Вспомогательная функция для надежной заморозки Backbone ===
+def _freeze_backbone(model, prefix=('block', 'stem')):
     """
-    Замораживает слои в модели, чьи имена начинаются с заданного префикса,
+    Замораживает слои в модели, чьи имена начинаются с одного из заданных префиксов,
     и также замораживает все слои BatchNormalization в модели.
+
+    Args:
+        model (tf.keras.Model): Модель для заморозки.
+        prefix (tuple or str): Префикс или кортеж префиксов для замораживаемых слоев.
     """
+    if isinstance(prefix, str):
+        prefix = (prefix,) # Преобразуем в кортеж, если передана строка
+
     frozen, bn_frozen = 0, 0
-    # Проходим по ВСЕМ слоям модели (включая вложенные)
+    # [ИСПРАВЛЕНО] Убран рекурсивный проход. Keras model.layers уже дает все слои.
     for layer in model.layers:
         # Заморозка слоев Backbone по префиксу (напр., 'block' для EfficientNet)
         if layer.name.startswith(prefix):
@@ -195,15 +229,8 @@ def _freeze_backbone(model, prefix='block'):
         # [ВАЖНО] Замораживаем ВСЕ BN-слои, включая те, что в головах, для Фазы 1
         if isinstance(layer, tf.keras.layers.BatchNormalization):
             layer.trainable = False; bn_frozen += 1
-        # Рекурсивно проходим по вложенным моделям/слоям
-        if hasattr(layer, 'layers'):
-            for sub_layer in layer.layers:
-                 if sub_layer.name.startswith(prefix):
-                      sub_layer.trainable = False; frozen += 1
-                 if isinstance(sub_layer, tf.keras.layers.BatchNormalization):
-                      sub_layer.trainable = False; bn_frozen += 1
 
-    logger.info(f"Backbone freeze: {frozen} слоев с префиксом '{prefix}' заморожены. {bn_frozen} BN слоев заморожены.")
+    logger.info(f"Backbone freeze: {frozen} слоев с префиксами {prefix} заморожены. {bn_frozen} BN слоев заморожены.")
 
 
 
@@ -257,11 +284,15 @@ def train_detector(main_config_path, predict_config_path=None, run_seed=None):
 
     logger.info(f"Создание тренировочного датасета (batch_size={batch_size}, augmentation={use_augmentation_train})...")
 
+    # [ИСПРАВЛЕНО] Берем fpn_strides из конфига
+    fpn_strides_from_config = main_config.get('fpn_strides', [8, 16, 32])
+
     # Генерируем all_anchors один раз для датасетов и функции потерь
     all_anchors_for_dataset_and_loss = generate_all_anchors(
-        main_config['input_shape'], [8, 16, 32], # FPN strides жестко заданы, должны соответствовать модели
-        main_config['anchor_scales'], # Скалярные множители
-        main_config['anchor_ratios']  # Соотношения сторон
+        main_config['input_shape'],
+        fpn_strides_from_config, # Используем strides из конфига
+        main_config['anchor_scales'],
+        main_config['anchor_ratios']
     )
 
     # Создаем tf.data.Dataset для тренировки
@@ -297,14 +328,12 @@ def train_detector(main_config_path, predict_config_path=None, run_seed=None):
     logger.info("--- Фаза 1: Обучение с замороженным Backbone ---")
 
     # [ИСПРАВЛЕНО] Используем вспомогательную функцию для надежной заморозки
-    # Замораживаем Backbone и все BN-слои по префиксу, если это указано в конфиге
+    logger.info("--- Фаза 1: Обучение с замороженным Backbone ---")
+
     if main_config.get('freeze_backbone', True):
-        # Для EfficientNet слои начинаются с 'block' и 'stem'
-        _freeze_backbone(model, prefix='block')
-        _freeze_backbone(model, prefix='stem')
+        _freeze_backbone(model, prefix=('block', 'stem'))
     else:
         logger.info("Backbone не замораживается для Фазы 1 (freeze_backbone=False в конфиге).")
-
 
     # Компиляция для Фазы 1
     optimizer_phase1 = tfa.optimizers.AdamW(
@@ -313,18 +342,12 @@ def train_detector(main_config_path, predict_config_path=None, run_seed=None):
         clipnorm=main_config.get('clipnorm', 1.0)
     )
 
-    model.compile(optimizer=optimizer_phase1, loss_fn=loss_fn)
+    # [ИСПРАВЛЕНО] Переименовываем loss_fn в loss
+    model.compile(optimizer=optimizer_phase1, loss=loss_fn)  # Используем loss вместо loss_fn
     logger.info("Модель скомпилирована для Фазы 1.")
 
     # 8. Настройка Callbacks для Фазы 1
     logger.info("Настройка коллбэков для Фазы 1...")
-
-    # TensorBoard callback может быть общим для обеих фаз
-    tensorboard_callback = tf.keras.callbacks.TensorBoard(
-        log_dir=str(log_dir_run),
-        histogram_freq=main_config.get('tensorboard_histogram_freq', 1),
-        update_freq='epoch'
-    )
 
     # [ИСПРАВЛЕНО] Создаем НОВЫЙ объект ModelCheckpoint для Фазы 1
     checkpoint_filename_h5_phase1 = main_config.get('best_model_filename', 'best_model.weights.h5')
@@ -353,28 +376,24 @@ def train_detector(main_config_path, predict_config_path=None, run_seed=None):
     )
 
     # LR Scheduler для Фазы 1
-    # [ИЗМЕНЕНО] LR Scheduler теперь не требует steps_per_epoch, если мы его не используем
-    # Но для отслеживания LR, его можно оставить, если он использует общее количество шагов,
-    # которое можно рассчитать как len(train_dataset) * epochs
-    # Для простоты, оставим его, но убедимся, что он не вызывает ошибок
-    # Рассчитаем steps_per_epoch ЗДЕСЬ для LR Scheduler
-    # Этот расчет может быть неточным, если генератор пропускает данные.
-    train_generator_instance_for_steps = DataGenerator(main_config, all_anchors_for_dataset_and_loss, is_training=True)
-    steps_per_epoch_for_lr = calculate_steps(len(train_generator_instance_for_steps), batch_size)
-    del train_generator_instance_for_steps
-    if steps_per_epoch_for_lr == 0:
-         logger.warning("steps_per_epoch для LR Scheduler равен 0, LR не будет обновляться корректно.")
-
+    # [ИЗМЕНЕНИЕ] LR Scheduler теперь не требует steps_per_epoch в конструкторе
     lr_scheduler_phase1 = WarmupCosineDecay(
         initial_lr=main_config['initial_learning_rate'],
         total_epochs=main_config['epochs_phase1'], # Длительность Фазы 1
-        steps_per_epoch=steps_per_epoch_for_lr, # Передаем рассчитанное значение
         warmup_epochs=main_config.get('warmup_epochs', 0), # Warmup из конфига
         name='LR_Phase1'
     )
 
+    # [ИСПРАВЛЕНО] Создаем новый TensorBoard callback для Фазы 1
+    tensorboard_callback_phase1 = tf.keras.callbacks.TensorBoard(
+        log_dir=str(log_dir_run / 'phase1'),
+        histogram_freq=main_config.get('tensorboard_histogram_freq', 1),
+        update_freq='epoch'
+    )
+
+
     callbacks_phase1 = [
-        tensorboard_callback,
+        tensorboard_callback_phase1,
         model_checkpoint_callback_phase1,
         early_stopping_callback_phase1,
         lr_scheduler_phase1,
@@ -386,7 +405,7 @@ def train_detector(main_config_path, predict_config_path=None, run_seed=None):
     history1 = model.fit(
         train_dataset,
         epochs=main_config['epochs_phase1'],
-        # steps_per_epoch=steps_per_epoch, # Убрано
+        # steps_per_epoch=None, # Убрано
         validation_data=val_dataset, # validation_steps не нужен, если val_dataset не зациклен
         callbacks=callbacks_phase1,
         verbose=1 # Логгировать прогресс
@@ -401,15 +420,25 @@ def train_detector(main_config_path, predict_config_path=None, run_seed=None):
         logger.info(f"Загрузка лучших весов с Фазы 1 из: {checkpoint_filepath_phase1}")
         model.load_weights(checkpoint_filepath_phase1)
     else:
-        logger.warning(f"Чекпоинт Фазы 1 не найден: {checkpoint_filepath_phase1}. Продолжаем с весами последней эпохи Фазы 1.")
+        logger.warning(
+            f"Чекпоинт Фазы 1 не найден: {checkpoint_filepath_phase1}. Продолжаем с весами последней эпохи Фазы 1.")
 
-    # [ИСПРАВЛЕНО] Размораживаем все слои модели
-    model.trainable = True
+    for layer in model.layers:
+        layer.trainable = True
+
+        # Затем, настраиваем BN слои, как рекомендовано
     for layer in model.layers:
         if isinstance(layer, tf.keras.layers.BatchNormalization):
-            # Размораживаем BN слои для Фазы 2, как рекомендовано
-            layer.trainable = True
-    logger.info("Все слои модели и BN разморожены для Фазы 2.")
+            layer.momentum = 0.97
+            layer.epsilon = 1e-3
+            # layer.renorm = True # renorm может быть нестабилен, начнем без него
+        if hasattr(layer, 'layers'):  # Рекурсивно проходим по вложенным моделям (например, Backbone)
+            for sub_layer in layer.layers:
+                if isinstance(sub_layer, tf.keras.layers.BatchNormalization):
+                    sub_layer.momentum = 0.97
+                    sub_layer.epsilon = 1e-3
+
+    logger.info("Все слои модели и BN разморожены для Фазы 2. BN momentum=0.97, epsilon=1e-3.")
 
 
     # Компиляция для Фазы 2
@@ -422,7 +451,8 @@ def train_detector(main_config_path, predict_config_path=None, run_seed=None):
     logger.info("Сброс счетчика итераций оптимизатора для Фазы 2...")
     optimizer_phase2.iterations.assign(0)
 
-    model.compile(optimizer=optimizer_phase2, loss_fn=loss_fn) # Используем ту же функцию потерь
+    # [ИСПРАВЛЕНО] Переименовываем loss_fn в loss
+    model.compile(optimizer=optimizer_phase2, loss=loss_fn) # Используем ту же функцию потерь
     logger.info("Модель скомпилирована для Фазы 2 с более низким LR.")
 
     # 11. Настройка Callbacks для Фазы 2
@@ -453,13 +483,19 @@ def train_detector(main_config_path, predict_config_path=None, run_seed=None):
     lr_scheduler_phase2 = WarmupCosineDecay(
         initial_lr=main_config['fine_tune_learning_rate'],
         total_epochs=main_config['epochs_phase2'],
-        steps_per_epoch=steps_per_epoch_for_lr, # Используем тот же steps_per_epoch
         warmup_epochs=main_config.get('warmup_epochs_phase2', 0),
         name='LR_Phase2'
     )
 
+    # [ИСПРАВЛЕНО] Создаем новый TensorBoard callback для Фазы 2 с отдельной папкой
+    tensorboard_callback_phase2 = tf.keras.callbacks.TensorBoard(
+        log_dir=str(log_dir_run / 'phase2'),
+        histogram_freq=main_config.get('tensorboard_histogram_freq', 1),
+        update_freq='epoch'
+    )
+
     callbacks_phase2 = [
-        tensorboard_callback, # Используем тот же TensorBoard callback
+        tensorboard_callback_phase2,
         model_checkpoint_callback_phase2,
         early_stopping_callback_phase2,
         lr_scheduler_phase2,
@@ -479,6 +515,7 @@ def train_detector(main_config_path, predict_config_path=None, run_seed=None):
     )
     logger.info("Фаза 2 обучения завершена.")
     logger.info("--- Обучение детектора завершено ---")
+
 
 
 # --- Точка входа скрипта ---
