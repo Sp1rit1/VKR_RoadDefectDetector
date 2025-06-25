@@ -23,12 +23,7 @@ class_names: ["pit", "crack"]
 # Используем стандартный подход RetinaNet: якоря генерируются из комбинаций scales и ratios.
 # Этот подход более надежный, робастный и простой в реализации, чем K-Means.
 
-anchor_ratios:
-- 0.126  # Вертикальная трещина
-- 0.362  # Умеренно-вертикальная
-- 1.136  # Квадратная/Яма (чуть вытянутая)
-- 2.461  # Умеренно-горизонтальная
-- 6.093  # Горизонтальная трещина
+anchor_ratios: [0.5, 0.8, 1.0, 1.3, 2.0]
 
 # Масштабы якорей. Это множители к базовому размеру якоря на каждом уровне.
 # Базовый размер = stride * anchor_base_size. Стандартно anchor_base_size = 4.
@@ -55,39 +50,45 @@ fpn_gt_assignment_side_ranges:
   P4: [64, 128]
   P5: [128, 99999] # Используем большое число вместо float('inf') для совместимости с YAML
 
+fpn_strides: [8, 16, 32]
+
 # Пороги IoU для назначения якорей к GT.
 # Используем стандартные значения для RetinaNet.
-anchor_positive_iou_threshold: 0.5 # IoU >= 0.5 -> позитивный якорь
-anchor_ignore_iou_threshold: 0.4   # 0.4 <= IoU < 0.5 -> игнорируемый якорь
+anchor_positive_iou_threshold: 0.4 # IoU >= 0.5 -> позитивный якорь
+anchor_ignore_iou_threshold: 0.3   # 0.4 <= IoU < 0.5 -> игнорируемый якорь
 # Якоря с IoU < 0.4 считаются негативными (фоном).
 # Гарантированное назначение (если у GT нет позитивных якорей) будет реализовано в data_loader.
 
 # --- Параметры функции потерь ---
 loss_weights:
   classification: 1.0
-  box_regression: 1.0 # Для начала поставим 1.0, чтобы сбалансировать потери. Можно будет поднять до 1.5 позже.
+  box_regression: 1.3 # Для начала поставим 1.0, чтобы сбалансировать потери. Можно будет поднять до 1.5 позже.
 
 focal_loss_alpha: 0.25
-focal_loss_gamma: 1.25
+focal_loss_gamma: 1.0
 
 box_loss_type: "ciou"
 huber_loss_delta: 1.0
 
 # --- Параметры обучения ---
 optimizer: "AdamW"
-initial_learning_rate: 0.0001 # Для AdamW и обучения с нуля (замороженный backbone) можно начать с 1e-3
-fine_tune_learning_rate: 0.00001 # LR для размороженного backbone
+initial_learning_rate: 0.0016 # Для AdamW и обучения с нуля (замороженный backbone) можно начать с 1e-3
+fine_tune_learning_rate: 0.00016 # LR для размороженного backbone
 
 lr_schedule: "cosine_decay"
-warmup_epochs: 3 #3
+warmup_epochs: 1
 # cosine_decay_epochs будет равно общему числу эпох обучения на каждой фазе.
 
 
-epochs_phase1: 100 #100
-epochs_phase2: 50 #50
+epochs_phase1: 50 #100
+epochs_phase2: 30 #50
 
-early_stopping_patience: 20       # Сколько эпох ждать без улучшения val_loss
+early_stopping_patience: 15      # Сколько эпох ждать без улучшения val_loss
 early_stopping_min_delta: 0.0001  # Минимальное изменение, которое считается улучшением
+
+unfreeze_bn_phase2: true # Размораживать ли BN слои в Фазе 2
+bn_momentum_phase2: 0.97 # Momentum для BN в Фазе 2
+bn_epsilon_phase2: 1e-3 # Epsilon для BN в Фазе 2
 
 
 batch_size: 8
@@ -99,7 +100,7 @@ saved_model_dir: "weights/detector_v3_retinanet"
 best_model_filename: "best_model.keras"
 
 # --- Параметры оценки и инференса ---
-eval_conf_threshold: 0.3
+eval_conf_threshold: 0.25
 eval_iou_threshold: 0.45
 
 predict_conf_threshold: 0.3

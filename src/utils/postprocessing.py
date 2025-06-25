@@ -34,37 +34,76 @@ except ImportError:
 def decode_predictions(raw_preds, all_anchors, detector_config):
     """
     Декодирует "сырые" выходы модели (смещения) в реальные координаты боксов.
+    Ожидает, что raw_preds - это список с чередующимися тензорами регрессии и классификации:
+    [reg_P3, cls_P3, reg_P4, cls_P4, reg_P5, cls_P5].
     """
     num_classes = detector_config['num_classes']
-    num_levels = len(raw_preds) // 2
+    # num_levels = len(raw_preds) // 2 # Теперь это не так прямолинейно, но должно быть 3 уровня FPN
 
-    # Шаг 1: Конкатенация. Это более явно и чисто, чем if/else.
-    # Мы всегда ожидаем список из 6 тензоров.
-    y_pred_reg_flat = tf.concat([tf.reshape(p, [tf.shape(p)[0], -1, 4]) for p in raw_preds[:num_levels]], axis=1)
-    y_pred_cls_flat = tf.concat([tf.reshape(p, [tf.shape(p)[0], -1, num_classes]) for p in raw_preds[num_levels:]],
-                                axis=1)
+    # === [ИСПРАВЛЕНО согласно Варианту 2] ===
+    # Разбираем список raw_preds на регрессию и классификацию, учитывая чередование
+    reg_preds_list = raw_preds[0::2]  # Элементы с индексами 0, 2, 4 (reg_P3, reg_P4, reg_P5)
+    cls_preds_list = raw_preds[1::2]  # Элементы с индексами 1, 3, 5 (cls_P3, cls_P4, cls_P5)
 
-    # Шаг 2: Декодирование. Нет необходимости в expand_dims, TensorFlow сам справится с "вещанием" (broadcasting).
-    # all_anchors (N, 4) будет "вещаться" на y_pred_reg_flat (B, N, 4).
-    anchor_w = all_anchors[:, 2] - all_anchors[:, 0]
-    anchor_h = all_anchors[:, 3] - all_anchors[:, 1]
-    anchor_cx = all_anchors[:, 0] + 0.5 * anchor_w
-    anchor_cy = all_anchors[:, 1] + 0.5 * anchor_h
+    # Конкатенируем предсказания по уровням FPN
+    y_pred_reg_flat = tf.concat(
+        [tf.reshape(p, [tf.shape(p)[0], -1, 4]) for p in reg_preds_list],
+        axis=1
+    ) # Shape: (batch_size, total_anchors, 4)
+    y_pred_cls_flat = tf.concat(
+        [tf.reshape(p, [tf.shape(p)[0], -1, num_classes]) for p in cls_preds_list],
+        axis=1
+    ) # Shape: (batch_size, total_anchors, num_classes)
+    # === КОНЕЦ ИСПРАВЛЕНИЯ ===
 
-    tx, ty, tw, th = tf.unstack(y_pred_reg_flat, axis=-1)
+    # Извлекаем и масштабируем предсказанные смещения
+    tx_raw, ty_raw, tw_raw, th_raw = tf.unstack(y_pred_reg_flat, axis=-1)
+    # Применяем обратное масштабирование, как в _decode_boxes в функции потерь
+    tx = tx_raw / 0.1
+    ty = ty_raw / 0.1
+    tw = tw_raw / 0.2
+    th = th_raw / 0.2
+    # tx, ty, tw, th теперь имеют форму (batch_size, total_anchors)
 
-    pred_cx = tx * anchor_w + anchor_cx
-    pred_cy = ty * anchor_h + anchor_cy
-    pred_w = tf.exp(tw) * anchor_w
-    pred_h = tf.exp(th) * anchor_h
+    # --- Код для выравнивания форм якорей (остается таким же) ---
+    # all_anchors передается как (total_anchors, 4)
+    if len(tf.shape(all_anchors)) == 3:
+        all_anchors_squeezed = tf.squeeze(all_anchors, axis=0)
+    else:
+        all_anchors_squeezed = all_anchors
 
+    anchor_x1 = all_anchors_squeezed[:, 0]
+    anchor_y1 = all_anchors_squeezed[:, 1]
+    anchor_x2 = all_anchors_squeezed[:, 2]
+    anchor_y2 = all_anchors_squeezed[:, 3]
+
+    anchor_w = anchor_x2 - anchor_x1
+    anchor_h = anchor_y2 - anchor_y1
+    anchor_cx = anchor_x1 + 0.5 * anchor_w
+    anchor_cy = anchor_y1 + 0.5 * anchor_h
+
+    anchor_w_b = tf.expand_dims(anchor_w, axis=0)
+    anchor_h_b = tf.expand_dims(anchor_h, axis=0)
+    anchor_cx_b = tf.expand_dims(anchor_cx, axis=0)
+    anchor_cy_b = tf.expand_dims(anchor_cy, axis=0)
+    # --- Конец кода для якорей ---
+
+
+    # Декодируем центры и размеры
+    pred_cx = tx * anchor_w_b + anchor_cx_b
+    pred_cy = ty * anchor_h_b + anchor_cy_b
+    pred_w = tf.exp(tw) * anchor_w_b
+    pred_h = tf.exp(th) * anchor_h_b
+
+    # Вычисляем координаты углов декодированных боксов
     pred_x1 = pred_cx - 0.5 * pred_w
     pred_y1 = pred_cy - 0.5 * pred_h
     pred_x2 = pred_cx + 0.5 * pred_w
     pred_y2 = pred_cy + 0.5 * pred_h
 
-    # Формат [y1, x1, y2, x2] для NMS - это правильно.
+    # Собираем декодированные боксы в формате [y1, x1, y2, x2]
     decoded_boxes = tf.stack([pred_y1, pred_x1, pred_y2, pred_x2], axis=-1)
+    decoded_boxes = tf.clip_by_value(decoded_boxes, 0.0, 1.0)
 
     decoded_scores = tf.nn.sigmoid(y_pred_cls_flat)
 

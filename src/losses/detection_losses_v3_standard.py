@@ -251,6 +251,7 @@ class DetectorLoss(tf.keras.losses.Loss):
 
 
 
+
     # [ИЗМЕНЕНИЕ] Метод call - теперь принимает плоские y_true
     def call(self, y_true, y_pred):
         """

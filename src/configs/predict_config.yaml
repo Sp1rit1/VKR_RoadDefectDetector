@@ -9,9 +9,10 @@ detector_type: "fpn"  # fpn ИЛИ "single_level"
 single_level_detector_model_path: "weights/RoadDefectDetector_SingleLevel_P4_DebugFocusConfidence_single_level_P4_debug_full_train_loss_logger_best.keras"
 
 output_dir: "prediction_results_pipeline"
-default_conf_thresh: 0.5
-default_iou_thresh: 0.5
-default_max_dets: 1
+default_conf_thresh: 0.25
+default_iou_thresh: 0.1
+eval_iou_threshold: 0.1
+default_max_dets: 5
 
 # Параметры Классификатора (для инференса)
 classifier_input_shape: [224, 224, 3]
